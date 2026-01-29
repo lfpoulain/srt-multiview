@@ -6,3 +6,19 @@ __pycache__/
 *.log
 .DS_Store
 Thumbs.db
+
+# Packaging / build
+build/
+dist/
+*.spec
+!srt_multiview.spec
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.python-version
+
+# IDE
+.vscode/
+.idea/

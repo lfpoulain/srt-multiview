@@ -24,18 +24,20 @@ Application locale Python pour router des flux SRT vers plusieurs écrans Window
 srt-multiview/
 ├── bin/
 │   └── ffplay.exe
-├── desktop_app.py
-├── core.py
+├── build_exe.ps1
 ├── config.json
 ├── img/
 │   ├── icon.ico
 │   └── icon.png
+├── pyproject.toml
+├── run_app.py
 ├── srt_multiview/
 │   ├── __init__.py
 │   ├── __main__.py
 │   ├── core.py
 │   ├── paths.py
 │   └── ui.py
+├── srt_multiview.spec
 └── requirements.txt
 ```
 
@@ -54,6 +56,22 @@ pip install -r requirements.txt
 
 ```bash
 python -m srt_multiview
+```
+
+## Build (.exe)
+
+1. Créer/activer un virtualenv (recommandé)
+2. Installer les dépendances
+3. Lancer le script de build
+
+```powershell
+./build_exe.ps1
+```
+
+L'exécutable sera généré dans :
+
+```
+dist/SRT-MultiView.exe
 ```
 
 ### Workflow

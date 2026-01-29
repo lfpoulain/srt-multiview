@@ -1,6 +1,17 @@
 from pathlib import Path
+import sys
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
+
+def _runtime_root_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            return Path(meipass)
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[1]
+
+
+ROOT_DIR = _runtime_root_dir()
 BIN_DIR = ROOT_DIR / "bin"
 IMG_DIR = ROOT_DIR / "img"
 
