@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "srt-multiview"
+version = "0.1.0"
+description = "Application locale Python pour router des flux SRT vers plusieurs écrans Windows."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "CC BY-NC-SA 4.0" }
+authors = [
+  { name = "LFPoulain" },
+]
+dependencies = [
+  "screeninfo==0.8.1",
+  "PySide6==6.6.1",
+  "pyqtdarktheme==2.1.0",
+  "pillow==12.1.0",
+]
+
+[project.scripts]
+srt-multiview = "srt_multiview.ui:main"
+
+[project.urls]
+Homepage = "https://github.com/LFPoulain/srt-multiview"
+License = "https://creativecommons.org/licenses/by-nc-sa/4.0/"
+
+[tool.setuptools]
+packages = ["srt_multiview"]

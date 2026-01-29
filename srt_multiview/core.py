@@ -6,8 +6,7 @@ from pathlib import Path
 
 from screeninfo import get_monitors
 
-CONFIG_PATH = Path(__file__).parent / "config.json"
-FFPLAY_PATH = Path(__file__).parent / "bin" / "ffplay.exe"
+from .paths import CONFIG_PATH, FFPLAY_PATH
 
 
 def load_config() -> dict:
@@ -28,14 +27,15 @@ def load_config() -> dict:
             config = json.load(f)
             return normalize_config(config)
     except (json.JSONDecodeError, ValueError):
-        # Config corrompue, retourner la config par défaut
-        return normalize_config({
-            "streams": [
-                {"id": "stream-1", "name": "Flux 1", "port": 9001, "latency": 120},
-            ],
-            "mapping": {},
-            "excludePrimaryDisplay": True,
-        })
+        return normalize_config(
+            {
+                "streams": [
+                    {"id": "stream-1", "name": "Flux 1", "port": 9001, "latency": 120},
+                ],
+                "mapping": {},
+                "excludePrimaryDisplay": True,
+            }
+        )
 
 
 def normalize_config(config: dict) -> dict:

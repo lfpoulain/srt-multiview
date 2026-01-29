@@ -1,12 +1,11 @@
 import sys
 import time
-from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QEvent
+from PySide6.QtCore import Qt, QEvent, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon
 from PySide6.QtWidgets import (
-    QApplication,
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QFrame,
@@ -24,17 +23,15 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-import core
-
 import qdarktheme
 
-APP_ICON_ICO_PATH = Path(__file__).parent / "img" / "icon.ico"
-APP_ICON_PNG_PATH = Path(__file__).parent / "img" / "icon.png"
+from . import core
+from .paths import APP_ICON_ICO_PATH, APP_ICON_PNG_PATH
+
 APP_ID = "srtmultiview.desktop"
 
 APP_STYLESHEET = """
@@ -319,7 +316,7 @@ class MainWindow(QMainWindow):
         self.exclude_primary.setChecked(bool(self.config.get("excludePrimaryDisplay", True)))
         self.exclude_primary.stateChanged.connect(self.on_exclude_primary_changed)
         prefs_layout.addWidget(self.exclude_primary)
-        prefs_note = QLabel("Astuce : utilisez \"Rafraîchir\" après un changement d'écran.")
+        prefs_note = QLabel('Astuce : utilisez "Rafraîchir" après un changement d\'écran.')
         prefs_note.setObjectName("Subtitle")
         prefs_note.setWordWrap(True)
         prefs_layout.addWidget(prefs_note)
@@ -497,6 +494,7 @@ class MainWindow(QMainWindow):
         def _update(*_args):
             self.update_config_from_row(row)
             self.schedule_save()
+
         return _update
 
     def schedule_save(self):
@@ -510,10 +508,16 @@ class MainWindow(QMainWindow):
         stream = streams[row]
         stream_id = str(stream.get("id"))
 
-        name_edit = self.table.cellWidget(row, 0)
-        port_spin = self.table.cellWidget(row, 1)
-        latency_spin = self.table.cellWidget(row, 2)
-        display_combo = self.table.cellWidget(row, 3)
+        def unwrap(col: int):
+            container = self.table.cellWidget(row, col)
+            if container and container.layout() and container.layout().count():
+                return container.layout().itemAt(0).widget()
+            return None
+
+        name_edit = unwrap(0)
+        port_spin = unwrap(1)
+        latency_spin = unwrap(2)
+        display_combo = unwrap(3)
 
         if name_edit:
             stream["name"] = name_edit.text().strip() or stream_id
@@ -537,7 +541,6 @@ class MainWindow(QMainWindow):
         core.save_config(self.config)
 
     def check_duplicate_ports(self) -> list[int]:
-        """Retourne la liste des ports utilisés plusieurs fois."""
         streams = self.config.get("streams", [])
         ports = [s.get("port") for s in streams]
         seen = set()
@@ -556,8 +559,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "Ports en double",
-                f"Attention : les ports suivants sont utilisés plusieurs fois :\n{', '.join(map(str, duplicate_ports))}\n\n"
-                "Cela peut causer des conflits.",
+                "Attention : les ports suivants sont utilisés plusieurs fois :\n"
+                + ", ".join(map(str, duplicate_ports))
+                + "\n\nCela peut causer des conflits.",
             )
 
         results = core.apply_mapping(self.config)
@@ -661,9 +665,7 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem(label)
             color = QColor("#60a5fa") if display.get("isPrimary") else QColor("#e2e8f0")
             item.setForeground(color)
-            item.setToolTip(
-                f"ID: {display['id']} | Position: {display['x']}, {display['y']}"
-            )
+            item.setToolTip(f"ID: {display['id']} | Position: {display['x']}, {display['y']}")
             self.displays_list.addItem(item)
 
     def update_header_chips(self, status: dict | None = None):
@@ -690,8 +692,9 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
-def main():
+def main() -> None:
     qdarktheme.enable_hi_dpi()
+
     if sys.platform == "win32":
         try:
             import ctypes
@@ -699,16 +702,14 @@ def main():
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
         except Exception:
             pass
+
     app = QApplication(sys.argv)
     if APP_ICON_ICO_PATH.exists():
         app.setWindowIcon(QIcon(str(APP_ICON_ICO_PATH)))
     elif APP_ICON_PNG_PATH.exists():
         app.setWindowIcon(QIcon(str(APP_ICON_PNG_PATH)))
+
     apply_theme(app)
     w = MainWindow()
     w.show()
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()
+    raise SystemExit(app.exec())

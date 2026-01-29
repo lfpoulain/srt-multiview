@@ -24,12 +24,25 @@ Application locale Python pour router des flux SRT vers plusieurs écrans Window
 srt-multiview/
 ├── bin/
 │   └── ffplay.exe
-├── app.py
 ├── desktop_app.py
 ├── core.py
 ├── config.json
+├── img/
+│   ├── icon.ico
+│   └── icon.png
+├── srt_multiview/
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── core.py
+│   ├── paths.py
+│   └── ui.py
 └── requirements.txt
 ```
+
+## Licence
+
+Srt-MultiView © 2026 by LFPoulain is licensed under CC BY-NC-SA 4.0.
+To view a copy of this license, visit https://creativecommons.org/licenses/by-nc-sa/4.0/.
 
 ## Installation
 
@@ -40,7 +53,7 @@ pip install -r requirements.txt
 ## Utilisation
 
 ```bash
-python desktop_app.py
+python -m srt_multiview
 ```
 
 ### Workflow
