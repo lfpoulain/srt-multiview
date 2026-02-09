@@ -17,6 +17,7 @@ IMG_DIR = ROOT_DIR / "img"
 
 CONFIG_PATH = ROOT_DIR / "config.json"
 FFPLAY_PATH = BIN_DIR / "ffplay.exe"
+FFMPEG_PATH = BIN_DIR / "ffmpeg.exe"
 
 APP_ICON_ICO_PATH = IMG_DIR / "icon.ico"
 APP_ICON_PNG_PATH = IMG_DIR / "icon.png"

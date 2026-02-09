@@ -1,21 +1,32 @@
 {
   "streams": [
     {
-      "id": "stream-1",
+      "id": "stream-1770651579154",
       "name": "Flux 1",
       "port": 9001,
       "latency": 120
     },
     {
-      "id": "stream-1769619663910",
+      "id": "stream-1770651584740",
       "name": "Flux 2",
       "port": 9002,
       "latency": 120
+    },
+    {
+      "id": "stream-1770651585174",
+      "name": "Flux 3",
+      "port": 9003,
+      "latency": 120
     }
   ],
-  "mapping": {
-    "stream-1": "\\\\.\\DISPLAY1",
-    "stream-1769619663910": "\\\\.\\DISPLAY3"
-  },
-  "excludePrimaryDisplay": true
+  "mapping": {},
+  "excludePrimaryDisplay": true,
+  "sender": {
+    "displayId": "\\\\.\\DISPLAY2",
+    "host": "127.0.0.1",
+    "port": 200,
+    "latency": 200,
+    "fps": 25,
+    "bitrateK": 10000
+  }
 }

@@ -1,28 +1,30 @@
 # SRT Multiview
 
-Application locale Python pour router des flux SRT vers plusieurs écrans Windows.
+Application locale Python pour router des flux SRT vers plusieurs écrans Windows, avec émission SRT intégrée.
 
 ## Fonctionnalités
 
 - **Réception SRT** : Écoute plusieurs flux SRT en mode `listener` (vous envoyez en `caller`)
+- **Émission SRT** : Capture un écran et l'envoie en SRT via ffmpeg (mode `caller`)
 - **Multi-écrans** : Affiche chaque flux en plein écran sur un écran Windows différent
-- **UI Desktop** : Application Windows pour mapper flux → écran
+- **UI Desktop** : Interface moderne avec cartes individuelles par flux, thème sombre Dracula
 - **Exclusion écran principal** : Option pour ne pas utiliser l'écran de travail
-- **Configuration persistante** : Ports, latence et mapping sauvegardés
+- **Configuration persistante** : Ports, latence, mapping et paramètres d'émission sauvegardés
 
 ## Prérequis
 
 1. **Python 3.10+**
-2. **ffplay** (inclus avec FFmpeg) dans le dossier `bin/`
+2. **ffplay** et **ffmpeg** (inclus avec FFmpeg) dans le dossier `bin/`
 
-### Installation de ffplay
+### Installation de ffplay / ffmpeg
 
 1. Télécharger FFmpeg : https://github.com/BtbN/FFmpeg-Builds/releases
-2. Extraire `ffplay.exe` dans le dossier `bin/` du projet
+2. Extraire `ffplay.exe` et `ffmpeg.exe` dans le dossier `bin/` du projet
 
 ```
 srt-multiview/
 ├── bin/
+│   ├── ffmpeg.exe
 │   └── ffplay.exe
 ├── build_exe.ps1
 ├── config.json
@@ -74,12 +76,18 @@ L'exécutable sera généré dans :
 dist/SRT-MultiView.exe
 ```
 
-### Workflow
+### Workflow — Réception
 
-1. **Configurer les flux** : Définir les ports SRT (ex: 9001, 9002, 9003)
-2. **Mapper les écrans** : Associer chaque flux à un écran
-3. **Démarrer** : Cliquer sur "Démarrer"
+1. **Configurer les flux** : Ajouter des flux SRT avec « + Ajouter un flux » (nom, port, latence)
+2. **Mapper les écrans** : Associer chaque flux à un écran via le sélecteur
+3. **Démarrer** : Cliquer sur « ▶ Démarrer tout »
 4. **Envoyer depuis la régie** : Utiliser OBS/vMix/etc. en mode `caller` vers `srt://IP:PORT`
+
+### Workflow — Émission
+
+1. **Sélectionner l'écran** à capturer dans le panneau « Émission SRT »
+2. **Configurer** : hôte destination, port, latence, FPS, bitrate
+3. **Émettre** : Cliquer sur « ▶ Émettre »
 
 ### Exemple OBS
 
@@ -91,12 +99,14 @@ srt://192.168.1.100:9001?mode=caller&latency=120000
 ## Configuration
 
 Le fichier `config.json` stocke :
-- Les flux (nom, port, latence)
+- Les flux entrants (nom, port, latence)
 - Le mapping flux → écran
 - L'option d'exclusion de l'écran principal
+- Les paramètres d'émission SRT (écran, hôte, port, latence, FPS, bitrate)
 
 ## Notes techniques
 
 - ffplay est lancé avec `-fs` (fullscreen) positionné sur l'écran cible
+- ffmpeg est utilisé pour la capture d'écran et l'émission SRT en mode `caller`
 - La latence SRT est en millisecondes (120 = 120ms par défaut)
-- Les flux sont en mode `listener` (l'app attend les connexions)
+- Les flux entrants sont en mode `listener` (l'app attend les connexions)

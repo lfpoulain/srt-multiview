@@ -6,7 +6,7 @@ from pathlib import Path
 
 from screeninfo import get_monitors
 
-from .paths import CONFIG_PATH, FFPLAY_PATH
+from .paths import CONFIG_PATH, FFMPEG_PATH, FFPLAY_PATH
 
 
 def load_config() -> dict:
@@ -44,6 +44,33 @@ def normalize_config(config: dict) -> dict:
     config.setdefault("streams", [])
     config.setdefault("mapping", {})
     config["excludePrimaryDisplay"] = bool(config.get("excludePrimaryDisplay", True))
+
+    sender = dict(config.get("sender") or {})
+    sender.setdefault("displayId", "")
+    sender.setdefault("host", "127.0.0.1")
+    sender.setdefault("port", 10000)
+    sender.setdefault("latency", 120)
+    sender.setdefault("fps", 30)
+    sender.setdefault("bitrateK", 4000)
+    sender["displayId"] = str(sender.get("displayId") or "")
+    sender["host"] = str(sender.get("host") or "127.0.0.1")
+    try:
+        sender["port"] = int(sender.get("port") or 10000)
+    except (TypeError, ValueError):
+        sender["port"] = 10000
+    try:
+        sender["latency"] = int(sender.get("latency") or 120)
+    except (TypeError, ValueError):
+        sender["latency"] = 120
+    try:
+        sender["fps"] = int(sender.get("fps") or 30)
+    except (TypeError, ValueError):
+        sender["fps"] = 30
+    try:
+        sender["bitrateK"] = int(sender.get("bitrateK") or 4000)
+    except (TypeError, ValueError):
+        sender["bitrateK"] = 4000
+    config["sender"] = sender
 
     mapping = config.get("mapping") or {}
     config["mapping"] = {str(k): str(v) for k, v in mapping.items() if v is not None}
@@ -177,6 +204,132 @@ class PlayerManager:
 
 
 player_manager = PlayerManager(FFPLAY_PATH)
+
+
+@dataclass
+class SenderLaunchResult:
+    ok: bool
+    reason: str | None = None
+
+
+class SenderManager:
+    def __init__(self, ffmpeg_path: Path):
+        self.ffmpeg_path = ffmpeg_path
+        self.proc: subprocess.Popen | None = None
+        self.last_error: str | None = None
+
+    def stop(self) -> None:
+        if self.proc and self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+        self.proc = None
+
+    def status(self) -> bool:
+        return bool(self.proc and self.proc.poll() is None)
+
+    def _virtual_desktop_origin(self, displays: list[dict]) -> tuple[int, int]:
+        if not displays:
+            return (0, 0)
+        min_x = min(int(d.get("x", 0)) for d in displays)
+        min_y = min(int(d.get("y", 0)) for d in displays)
+        return (min_x, min_y)
+
+    def start(
+        self,
+        display: dict,
+        host: str,
+        port: int,
+        *,
+        latency_ms: int = 120,
+        fps: int = 30,
+        bitrate_k: int = 4000,
+    ) -> SenderLaunchResult:
+        if not self.ffmpeg_path.exists():
+            return SenderLaunchResult(ok=False, reason=f"ffmpeg introuvable: {self.ffmpeg_path}")
+
+        self.stop()
+
+        displays = get_displays(exclude_primary=False)
+        origin_x, origin_y = self._virtual_desktop_origin(displays)
+        crop_x = int(display["x"]) - origin_x
+        crop_y = int(display["y"]) - origin_y
+        width = int(display["width"])
+        height = int(display["height"])
+
+        latency_us = max(0, int(latency_ms)) * 1000
+        fps = max(1, int(fps))
+        bitrate_k = max(100, int(bitrate_k))
+        host = (host or "127.0.0.1").strip()
+        port = int(port)
+
+        vf = f"crop={width}:{height}:{crop_x}:{crop_y}"
+        out_url = (
+            f"srt://{host}:{port}?mode=caller&latency={latency_us}"
+            f"&transtype=live&pkt_size=1316"
+        )
+
+        args = [
+            str(self.ffmpeg_path),
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-f",
+            "gdigrab",
+            "-framerate",
+            str(fps),
+            "-draw_mouse",
+            "1",
+            "-i",
+            "desktop",
+            "-vf",
+            vf,
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-tune",
+            "zerolatency",
+            "-pix_fmt",
+            "yuv420p",
+            "-g",
+            str(fps * 2),
+            "-keyint_min",
+            str(fps * 2),
+            "-b:v",
+            f"{bitrate_k}k",
+            "-maxrate",
+            f"{bitrate_k}k",
+            "-bufsize",
+            f"{bitrate_k * 2}k",
+            "-f",
+            "mpegts",
+            out_url,
+        ]
+
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+        try:
+            self.proc = subprocess.Popen(
+                args,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+            self.last_error = None
+            return SenderLaunchResult(ok=True)
+        except Exception as e:
+            self.proc = None
+            self.last_error = str(e)
+            return SenderLaunchResult(ok=False, reason=str(e))
+
+
+sender_manager = SenderManager(FFMPEG_PATH)
 
 
 def apply_mapping(config: dict) -> dict[str, bool]:
