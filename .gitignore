@@ -13,6 +13,9 @@ dist/
 *.spec
 !srt_multiview.spec
 
+# Runtime binaries (downloaded in CI)
+bin/*.exe
+
 # Python tooling
 .pytest_cache/
 .mypy_cache/

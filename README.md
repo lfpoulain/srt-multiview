@@ -14,7 +14,7 @@ Application locale Python pour router des flux SRT vers plusieurs écrans Window
 ## Prérequis
 
 1. **Python 3.10+**
-2. **ffplay** et **ffmpeg** (inclus avec FFmpeg) dans le dossier `bin/`
+2. **ffplay** et **ffmpeg** (inclus avec FFmpeg) dans le dossier `bin/` (uniquement si tu exécutes/build en local)
 
 ### Installation de ffplay / ffmpeg
 
@@ -60,21 +60,19 @@ pip install -r requirements.txt
 python -m srt_multiview
 ```
 
-## Build (.exe)
+## Exécutable Windows (.exe)
 
-1. Créer/activer un virtualenv (recommandé)
-2. Installer les dépendances
-3. Lancer le script de build
+L'exécutable est généré automatiquement via **GitHub Actions**.
 
-```powershell
-./build_exe.ps1
-```
+- À chaque `git push` sur `main`, le workflow publie (ou met à jour) une **pré-release** GitHub nommée **Nightly** (tag `nightly`) avec le dernier `SRT-MultiView.exe`.
+- Le workflow télécharge FFmpeg (pour obtenir `ffmpeg.exe` et `ffplay.exe`) avant le build.
+- Les binaires `bin/*.exe` ne doivent pas être versionnés (GitHub bloque les fichiers > 100MB).
 
-L'exécutable sera généré dans :
+Pour télécharger l'exe :
 
-```
-dist/SRT-MultiView.exe
-```
+1. Aller sur l'onglet **Releases** du repo
+2. Ouvrir **Nightly**
+3. Télécharger `SRT-MultiView.exe`
 
 ### Workflow — Réception
 
