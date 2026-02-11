@@ -35,7 +35,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl-shared.zip"
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
           Write-Host "Downloading $url"
           Invoke-WebRequest -Uri $url -OutFile "ffmpeg.zip"
 
@@ -44,15 +44,17 @@ jobs:
 
           New-Item -ItemType Directory -Force -Path "bin" | Out-Null
 
-          $ffmpegExe = Get-ChildItem -Path "ffmpeg" -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
-          if (-not $ffmpegExe) { throw "ffmpeg.exe not found in downloaded archive" }
-          Copy-Item $ffmpegExe.FullName "bin\ffmpeg.exe" -Force
+          # Copy the whole FFmpeg bin/ folder (includes required DLLs when present)
+          $ffmpegBinRoot = Get-ChildItem -Path "ffmpeg" -Recurse -Directory |
+            Where-Object { Test-Path (Join-Path $_.FullName "bin\\ffmpeg.exe") } |
+            Select-Object -First 1
 
-          $ffplayExe = Get-ChildItem -Path "ffmpeg" -Recurse -Filter "ffplay.exe" | Select-Object -First 1
-          if (-not $ffplayExe) { throw "ffplay.exe not found in downloaded archive" }
-          Copy-Item $ffplayExe.FullName "bin\ffplay.exe" -Force
+          if (-not $ffmpegBinRoot) {
+            throw "FFmpeg bin folder not found in downloaded archive"
+          }
 
-          Write-Host "FFmpeg binaries copied to .\bin\"
+          Copy-Item (Join-Path $ffmpegBinRoot.FullName "bin\\*") "bin\\" -Recurse -Force
+          Write-Host "FFmpeg bin/ copied to .\\bin\\"
 
       - name: Build EXE (PyInstaller)
         run: |
