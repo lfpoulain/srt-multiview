@@ -15,7 +15,7 @@ ROOT_DIR = _runtime_root_dir()
 BIN_DIR = ROOT_DIR / "bin"
 IMG_DIR = ROOT_DIR / "img"
 
-CONFIG_PATH = ROOT_DIR / "config.json"
+CONFIG_PATH = Path.home() / "srt-multiview-config.json"
 FFPLAY_PATH = BIN_DIR / "ffplay.exe"
 FFMPEG_PATH = BIN_DIR / "ffmpeg.exe"
 

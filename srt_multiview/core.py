@@ -52,8 +52,10 @@ def normalize_config(config: dict) -> dict:
     sender.setdefault("latency", 120)
     sender.setdefault("fps", 30)
     sender.setdefault("bitrateK", 4000)
+    sender.setdefault("includeSystemAudio", False)
     sender["displayId"] = str(sender.get("displayId") or "")
     sender["host"] = str(sender.get("host") or "127.0.0.1")
+    sender["includeSystemAudio"] = bool(sender.get("includeSystemAudio", False))
     try:
         sender["port"] = int(sender.get("port") or 10000)
     except (TypeError, ValueError):
@@ -85,6 +87,7 @@ def normalize_config(config: dict) -> dict:
         stream.setdefault("name", stream["id"])
         stream.setdefault("port", 9000 + i + 1)
         stream.setdefault("latency", 120)
+        stream.setdefault("muteAudio", False)
         normalized_streams.append(stream)
 
     config["streams"] = normalized_streams
@@ -179,9 +182,15 @@ class PlayerManager:
             "-y",
             str(display["height"]),
             "-fs",
+        ]
+
+        if bool(stream.get("muteAudio")):
+            args.append("-an")
+
+        args.extend([
             "-i",
             srt_url,
-        ]
+        ])
 
         creationflags = 0
         if sys.platform == "win32":
@@ -246,6 +255,7 @@ class SenderManager:
         latency_ms: int = 120,
         fps: int = 30,
         bitrate_k: int = 4000,
+        include_system_audio: bool = False,
     ) -> SenderLaunchResult:
         if not self.ffmpeg_path.exists():
             return SenderLaunchResult(ok=False, reason=f"ffmpeg introuvable: {self.ffmpeg_path}")
@@ -284,9 +294,29 @@ class SenderManager:
             "1",
             "-i",
             "desktop",
+        ]
+
+        if include_system_audio:
+            args.extend(
+                [
+                    "-f",
+                    "wasapi",
+                    "-i",
+                    "default",
+                ]
+            )
+
+        args.extend([
             "-vf",
             vf,
-            "-an",
+        ])
+
+        if include_system_audio:
+            args.extend(["-map", "0:v:0", "-map", "1:a:0"])
+        else:
+            args.append("-an")
+
+        args.extend([
             "-c:v",
             "libx264",
             "-preset",
@@ -305,10 +335,27 @@ class SenderManager:
             f"{bitrate_k}k",
             "-bufsize",
             f"{bitrate_k * 2}k",
+        ])
+
+        if include_system_audio:
+            args.extend(
+                [
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "128k",
+                    "-ac",
+                    "2",
+                    "-ar",
+                    "48000",
+                ]
+            )
+
+        args.extend([
             "-f",
             "mpegts",
             out_url,
-        ]
+        ])
 
         creationflags = 0
         if sys.platform == "win32":

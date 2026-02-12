@@ -630,6 +630,15 @@ class MainWindow(QMainWindow):
         sender_row4.addWidget(self.sender_bitrate_spin, stretch=1)
         sender_layout.addLayout(sender_row4)
 
+        sender_row4b = QHBoxLayout()
+        sender_row4b.setSpacing(10)
+        sender_row4b.addWidget(_form_label("Audio"))
+        self.sender_audio_chk = QCheckBox("Système")
+        self.sender_audio_chk.setToolTip("Inclure l'audio système dans l'émission")
+        self.sender_audio_chk.stateChanged.connect(self.on_sender_changed)
+        sender_row4b.addWidget(self.sender_audio_chk, stretch=1)
+        sender_layout.addLayout(sender_row4b)
+
         sender_row5 = QHBoxLayout()
         sender_row5.setSpacing(10)
         self.btn_sender_toggle = QPushButton("▶  Émettre")
@@ -745,6 +754,7 @@ class MainWindow(QMainWindow):
         self.sender_latency_spin.blockSignals(True)
         self.sender_fps_spin.blockSignals(True)
         self.sender_bitrate_spin.blockSignals(True)
+        self.sender_audio_chk.blockSignals(True)
         try:
             self.sender_display_combo.clear()
             self.sender_display_combo.addItem("— Sélectionner —", "")
@@ -771,6 +781,8 @@ class MainWindow(QMainWindow):
                 self.sender_bitrate_spin.setValue(int(sender.get("bitrateK") or 4000))
             except Exception:
                 self.sender_bitrate_spin.setValue(4000)
+
+            self.sender_audio_chk.setChecked(bool(sender.get("includeSystemAudio", False)))
         finally:
             self.sender_display_combo.blockSignals(False)
             self.sender_host_edit.blockSignals(False)
@@ -778,6 +790,7 @@ class MainWindow(QMainWindow):
             self.sender_latency_spin.blockSignals(False)
             self.sender_fps_spin.blockSignals(False)
             self.sender_bitrate_spin.blockSignals(False)
+            self.sender_audio_chk.blockSignals(False)
 
         self.refresh_sender_status()
 
@@ -789,6 +802,7 @@ class MainWindow(QMainWindow):
         sender["latency"] = int(self.sender_latency_spin.value())
         sender["fps"] = int(self.sender_fps_spin.value())
         sender["bitrateK"] = int(self.sender_bitrate_spin.value())
+        sender["includeSystemAudio"] = bool(self.sender_audio_chk.isChecked())
         self.schedule_save()
 
     def update_sender_toggle_button(self, is_running: bool):
@@ -841,6 +855,7 @@ class MainWindow(QMainWindow):
         latency = int(sender.get("latency") or 120)
         fps = int(sender.get("fps") or 30)
         bitrate_k = int(sender.get("bitrateK") or 4000)
+        include_system_audio = bool(sender.get("includeSystemAudio", False))
         result = core.sender_manager.start(
             display,
             host,
@@ -848,6 +863,7 @@ class MainWindow(QMainWindow):
             latency_ms=latency,
             fps=fps,
             bitrate_k=bitrate_k,
+            include_system_audio=include_system_audio,
         )
         if not result.ok:
             QMessageBox.warning(
@@ -933,6 +949,12 @@ class MainWindow(QMainWindow):
         latency_spin.valueChanged.connect(lambda v, r=row: self._on_card_changed(r))
         bottom_row.addWidget(latency_spin)
 
+        mute_chk = QCheckBox("Muet")
+        mute_chk.setChecked(bool(stream.get("muteAudio")))
+        mute_chk.setToolTip("Couper l'audio de ce flux")
+        mute_chk.stateChanged.connect(lambda _v, r=row: self._on_card_changed(r))
+        bottom_row.addWidget(mute_chk)
+
         screen_lbl = QLabel("Écran")
         screen_lbl.setObjectName("FormLabel")
         screen_lbl.setFixedWidth(38)
@@ -963,6 +985,7 @@ class MainWindow(QMainWindow):
             "name_edit": name_edit,
             "port_spin": port_spin,
             "latency_spin": latency_spin,
+            "mute_chk": mute_chk,
             "display_combo": display_combo,
             "status_dot": status_dot,
             "status_label": status_label,
@@ -1036,6 +1059,7 @@ class MainWindow(QMainWindow):
         stream["name"] = card["name_edit"].text().strip() or stream_id
         stream["port"] = int(card["port_spin"].value())
         stream["latency"] = int(card["latency_spin"].value())
+        stream["muteAudio"] = bool(card["mute_chk"].isChecked())
 
         display_id = card["display_combo"].currentData() or ""
         mapping = self.config.setdefault("mapping", {})
