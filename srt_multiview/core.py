@@ -61,6 +61,7 @@ def normalize_config(config: dict) -> dict:
     config.setdefault("mapping", {})
     config.setdefault("displayNames", {})
     config.setdefault("routes", [])
+    config.setdefault("receiver", {})
     config["excludePrimaryDisplay"] = bool(config.get("excludePrimaryDisplay", True))
     config["autoStartReceiver"] = bool(config.get("autoStartReceiver", False))
     config["autoStartSender"] = bool(config.get("autoStartSender", False))
@@ -123,9 +124,14 @@ def normalize_config(config: dict) -> dict:
     sender.setdefault("fps", 30)
     sender.setdefault("bitrateK", 4000)
     sender.setdefault("includeSystemAudio", False)
+    sender.setdefault("encoder", "cpu")
     sender["displayId"] = str(sender.get("displayId") or "")
     sender["host"] = str(sender.get("host") or "127.0.0.1")
     sender["includeSystemAudio"] = bool(sender.get("includeSystemAudio", False))
+    sender_encoder = str(sender.get("encoder") or "cpu").strip().lower()
+    if sender_encoder not in {"cpu", "nvenc", "amf", "auto"}:
+        sender_encoder = "cpu"
+    sender["encoder"] = sender_encoder
     try:
         sender["port"] = int(sender.get("port") or 10000)
     except (TypeError, ValueError):
@@ -143,6 +149,14 @@ def normalize_config(config: dict) -> dict:
     except (TypeError, ValueError):
         sender["bitrateK"] = 4000
     config["sender"] = sender
+
+    receiver = dict(config.get("receiver") or {})
+    receiver.setdefault("decode", "cpu")
+    decode = str(receiver.get("decode") or "cpu").strip().lower()
+    if decode not in {"cpu", "gpu"}:
+        decode = "cpu"
+    receiver["decode"] = decode
+    config["receiver"] = receiver
 
     mapping = config.get("mapping") or {}
     config["mapping"] = {str(k): str(v) for k, v in mapping.items() if v is not None}
@@ -329,7 +343,7 @@ class PlayerManager:
             return f"transpose=1,transpose=1,{vf}"
         return vf
 
-    def start_player(self, stream: dict, display: dict) -> PlayerLaunchResult:
+    def start_player(self, stream: dict, display: dict, *, hwaccel: str = "cpu") -> PlayerLaunchResult:
         if not self.ffplay_path.exists():
             return PlayerLaunchResult(ok=False, reason=f"ffplay introuvable: {self.ffplay_path}")
 
@@ -346,8 +360,21 @@ class PlayerManager:
         if source not in {"srt", "udp"}:
             source = "srt"
 
+        hwaccel = str(hwaccel or "cpu").strip().lower()
+        if hwaccel not in {"cpu", "gpu"}:
+            hwaccel = "cpu"
+
         args = [
             str(self.ffplay_path),
+        ]
+
+        if hwaccel == "gpu":
+            args.extend([
+                "-hwaccel",
+                "auto",
+            ])
+
+        args.extend([
             "-fflags",
             "nobuffer",
             "-flags",
@@ -370,7 +397,7 @@ class PlayerManager:
             "-vf",
             vf,
             "-fs",
-        ]
+        ])
 
         if source == "udp":
             args.extend([
@@ -425,6 +452,37 @@ class SenderManager:
         self.ffmpeg_path = ffmpeg_path
         self.proc: subprocess.Popen | None = None
         self.last_error: str | None = None
+        self._encoders_cache: set[str] | None = None
+
+    def _available_encoders(self) -> set[str]:
+        if self._encoders_cache is not None:
+            return self._encoders_cache
+        if not self.ffmpeg_path.exists():
+            self._encoders_cache = set()
+            return self._encoders_cache
+
+        try:
+            creationflags = _win_creationflags()
+            p = subprocess.run(
+                [
+                    str(self.ffmpeg_path),
+                    "-hide_banner",
+                    "-encoders",
+                ],
+                capture_output=True,
+                text=True,
+                creationflags=creationflags,
+            )
+            out = (p.stdout or "") + "\n" + (p.stderr or "")
+            encs: set[str] = set()
+            for name in ("h264_nvenc", "h264_amf"):
+                if name in out:
+                    encs.add(name)
+            self._encoders_cache = encs
+            return encs
+        except Exception:
+            self._encoders_cache = set()
+            return self._encoders_cache
 
     def stop(self) -> None:
         _terminate_proc(self.proc)
@@ -450,6 +508,7 @@ class SenderManager:
         fps: int = 30,
         bitrate_k: int = 4000,
         include_system_audio: bool = False,
+        encoder: str = "cpu",
     ) -> SenderLaunchResult:
         if not self.ffmpeg_path.exists():
             self.last_error = f"ffmpeg introuvable: {self.ffmpeg_path}"
@@ -511,26 +570,82 @@ class SenderManager:
         else:
             args.append("-an")
 
-        args.extend([
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-tune",
-            "zerolatency",
-            "-pix_fmt",
-            "yuv420p",
-            "-g",
-            str(fps * 2),
-            "-keyint_min",
-            str(fps * 2),
-            "-b:v",
-            f"{bitrate_k}k",
-            "-maxrate",
-            f"{bitrate_k}k",
-            "-bufsize",
-            f"{bitrate_k * 2}k",
-        ])
+        enc = str(encoder or "cpu").strip().lower()
+        if enc not in {"cpu", "nvenc", "amf", "auto"}:
+            enc = "cpu"
+
+        if enc == "auto":
+            available = self._available_encoders()
+            if "h264_amf" in available:
+                enc = "amf"
+            elif "h264_nvenc" in available:
+                enc = "nvenc"
+            else:
+                enc = "cpu"
+
+        if enc == "nvenc":
+            args.extend([
+                "-c:v",
+                "h264_nvenc",
+                "-preset",
+                "ll",
+                "-tune",
+                "ll",
+                "-rc",
+                "cbr",
+                "-pix_fmt",
+                "yuv420p",
+                "-g",
+                str(fps * 2),
+                "-keyint_min",
+                str(fps * 2),
+                "-b:v",
+                f"{bitrate_k}k",
+                "-maxrate",
+                f"{bitrate_k}k",
+                "-bufsize",
+                f"{bitrate_k * 2}k",
+            ])
+        elif enc == "amf":
+            args.extend([
+                "-c:v",
+                "h264_amf",
+                "-quality",
+                "speed",
+                "-pix_fmt",
+                "yuv420p",
+                "-g",
+                str(fps * 2),
+                "-keyint_min",
+                str(fps * 2),
+                "-b:v",
+                f"{bitrate_k}k",
+                "-maxrate",
+                f"{bitrate_k}k",
+                "-bufsize",
+                f"{bitrate_k * 2}k",
+            ])
+        else:
+            args.extend([
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-tune",
+                "zerolatency",
+                "-pix_fmt",
+                "yuv420p",
+                "-g",
+                str(fps * 2),
+                "-keyint_min",
+                str(fps * 2),
+                "-b:v",
+                f"{bitrate_k}k",
+                "-maxrate",
+                f"{bitrate_k}k",
+                "-bufsize",
+                f"{bitrate_k * 2}k",
+            ])
 
         if include_system_audio:
             args.extend(
@@ -670,6 +785,10 @@ route_manager = RouteManager(FFMPEG_PATH)
 def apply_mapping(config: dict) -> dict[str, PlayerLaunchResult]:
     config = normalize_config(config)
 
+    receiver_hwaccel = str((config.get("receiver") or {}).get("decode") or "cpu").strip().lower()
+    if receiver_hwaccel not in {"cpu", "gpu"}:
+        receiver_hwaccel = "cpu"
+
     results: dict[str, PlayerLaunchResult] = {}
     displays = get_displays(exclude_primary=False, name_overrides=config.get("displayNames") or {})
     display_map = {str(d["id"]): d for d in displays}
@@ -705,8 +824,8 @@ def apply_mapping(config: dict) -> dict[str, PlayerLaunchResult]:
             stream_copy["source"] = "udp"
             stream_copy["udpAddr"] = str(route.get("multicastAddr") or "").strip()
             stream_copy["udpPort"] = int(route.get("multicastPort") or 0)
-            results[stream_id] = player_manager.start_player(stream_copy, display)
+            results[stream_id] = player_manager.start_player(stream_copy, display, hwaccel=receiver_hwaccel)
         else:
-            results[stream_id] = player_manager.start_player(stream, display)
+            results[stream_id] = player_manager.start_player(stream, display, hwaccel=receiver_hwaccel)
 
     return results

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QInputDialog,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -832,9 +833,9 @@ class MainWindow(QMainWindow):
             except Exception:
                 available_h = 900
 
-        target_h = min(max(780, int(available_h * 0.88)), 980)
+        target_h = min(max(860, int(available_h * 0.93)), 1080)
         self.resize(1260, target_h)
-        self.setMinimumSize(1100, min(700, target_h))
+        self.setMinimumSize(1100, min(820, target_h))
 
         self.config = core.load_config()
         self.displays = []
@@ -977,6 +978,25 @@ class MainWindow(QMainWindow):
         self.exclude_primary.stateChanged.connect(self.on_exclude_primary_changed)
         prefs_layout.addWidget(self.exclude_primary)
 
+        rx_row = QHBoxLayout()
+        rx_row.setSpacing(10)
+        rx_lbl = QLabel("Réception")
+        rx_lbl.setObjectName("FormLabel")
+        rx_lbl.setFixedWidth(64)
+        rx_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        rx_row.addWidget(rx_lbl)
+        self.receiver_decode_combo = QComboBox()
+        self.receiver_decode_combo.addItem("CPU", "cpu")
+        self.receiver_decode_combo.addItem("GPU", "gpu")
+        self.receiver_decode_combo.setFixedHeight(28)
+        rx_current = str((self.config.get("receiver") or {}).get("decode") or "cpu").strip().lower()
+        rxi = self.receiver_decode_combo.findData(rx_current)
+        if rxi >= 0:
+            self.receiver_decode_combo.setCurrentIndex(rxi)
+        self.receiver_decode_combo.currentIndexChanged.connect(self.on_receiver_changed)
+        rx_row.addWidget(self.receiver_decode_combo, stretch=1)
+        prefs_layout.addLayout(rx_row)
+
         self.auto_start_receiver_chk = QCheckBox("Auto-start réception")
         self.auto_start_receiver_chk.setChecked(bool(self.config.get("autoStartReceiver", False)))
         self.auto_start_receiver_chk.stateChanged.connect(self.on_auto_start_changed)
@@ -1081,6 +1101,19 @@ class MainWindow(QMainWindow):
         sender_row4b.addWidget(self.sender_audio_chk, stretch=1)
         sender_layout.addLayout(sender_row4b)
 
+        sender_row4c = QHBoxLayout()
+        sender_row4c.setSpacing(10)
+        sender_row4c.addWidget(_form_label("Encodeur"))
+        self.sender_encoder_combo = QComboBox()
+        self.sender_encoder_combo.addItem("CPU", "cpu")
+        self.sender_encoder_combo.addItem("GPU (Auto)", "auto")
+        self.sender_encoder_combo.addItem("GPU (NVENC)", "nvenc")
+        self.sender_encoder_combo.addItem("GPU (AMF)", "amf")
+        self.sender_encoder_combo.setFixedHeight(28)
+        self.sender_encoder_combo.currentIndexChanged.connect(self.on_sender_changed)
+        sender_row4c.addWidget(self.sender_encoder_combo, stretch=1)
+        sender_layout.addLayout(sender_row4c)
+
         sender_row5 = QHBoxLayout()
         sender_row5.setSpacing(10)
         self.btn_sender_toggle = QPushButton("▶  Émettre")
@@ -1162,10 +1195,10 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
 
-        left_scroll.setMinimumWidth(360)
-        left_scroll.setMaximumWidth(360)
+        left_scroll.setMinimumWidth(440)
+        left_scroll.setMaximumWidth(440)
         streams_panel.setMinimumWidth(500)
-        splitter.setSizes([360, 720])
+        splitter.setSizes([460, 720])
 
         try:
             splitter.handle(1).setEnabled(False)
@@ -1393,10 +1426,13 @@ class MainWindow(QMainWindow):
         core.sender_manager.last_error = None
 
         self.exclude_primary.blockSignals(True)
+        self.receiver_decode_combo.blockSignals(True)
         try:
             self.exclude_primary.setChecked(True)
+            self.receiver_decode_combo.setCurrentIndex(self.receiver_decode_combo.findData("cpu"))
         finally:
             self.exclude_primary.blockSignals(False)
+            self.receiver_decode_combo.blockSignals(False)
 
         self.auto_start_receiver_chk.blockSignals(True)
         self.auto_start_sender_chk.blockSignals(True)
@@ -1435,6 +1471,7 @@ class MainWindow(QMainWindow):
         self.sender_fps_spin.blockSignals(True)
         self.sender_bitrate_spin.blockSignals(True)
         self.sender_audio_chk.blockSignals(True)
+        self.sender_encoder_combo.blockSignals(True)
         try:
             self.sender_display_combo.clear()
             self.sender_display_combo.addItem("— Sélectionner —", "")
@@ -1463,6 +1500,11 @@ class MainWindow(QMainWindow):
                 self.sender_bitrate_spin.setValue(4000)
 
             self.sender_audio_chk.setChecked(bool(sender.get("includeSystemAudio", False)))
+
+            enc = str(sender.get("encoder") or "cpu").strip().lower()
+            idx = self.sender_encoder_combo.findData(enc)
+            if idx >= 0:
+                self.sender_encoder_combo.setCurrentIndex(idx)
         finally:
             self.sender_display_combo.blockSignals(False)
             self.sender_host_edit.blockSignals(False)
@@ -1471,6 +1513,7 @@ class MainWindow(QMainWindow):
             self.sender_fps_spin.blockSignals(False)
             self.sender_bitrate_spin.blockSignals(False)
             self.sender_audio_chk.blockSignals(False)
+            self.sender_encoder_combo.blockSignals(False)
 
         self.refresh_sender_status()
 
@@ -1483,6 +1526,12 @@ class MainWindow(QMainWindow):
         sender["fps"] = int(self.sender_fps_spin.value())
         sender["bitrateK"] = int(self.sender_bitrate_spin.value())
         sender["includeSystemAudio"] = bool(self.sender_audio_chk.isChecked())
+        sender["encoder"] = str(self.sender_encoder_combo.currentData() or "cpu")
+        self.schedule_save()
+
+    def on_receiver_changed(self, *_args):
+        receiver = self.config.setdefault("receiver", {})
+        receiver["decode"] = str(self.receiver_decode_combo.currentData() or "cpu")
         self.schedule_save()
 
     def update_sender_toggle_button(self, is_running: bool):
@@ -1542,6 +1591,7 @@ class MainWindow(QMainWindow):
         fps = int(sender.get("fps") or 30)
         bitrate_k = int(sender.get("bitrateK") or 4000)
         include_system_audio = bool(sender.get("includeSystemAudio", False))
+        encoder = str(sender.get("encoder") or "cpu")
         result = core.sender_manager.start(
             display,
             host,
@@ -1550,6 +1600,7 @@ class MainWindow(QMainWindow):
             fps=fps,
             bitrate_k=bitrate_k,
             include_system_audio=include_system_audio,
+            encoder=encoder,
         )
         if not result.ok:
             QMessageBox.warning(
@@ -1606,14 +1657,14 @@ class MainWindow(QMainWindow):
 
         card_layout.addLayout(top_row)
 
-        source_row = QHBoxLayout()
-        source_row.setSpacing(10)
+        fields = QGridLayout()
+        fields.setHorizontalSpacing(10)
+        fields.setVerticalSpacing(6)
 
         source_lbl = QLabel("Source")
         source_lbl.setObjectName("FormLabel")
-        source_lbl.setFixedWidth(38)
+        source_lbl.setFixedWidth(54)
         source_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        source_row.addWidget(source_lbl)
 
         source_combo = QComboBox()
         source_combo.addItem("SRT", "srt")
@@ -1625,7 +1676,6 @@ class MainWindow(QMainWindow):
         if idx >= 0:
             source_combo.setCurrentIndex(idx)
         source_combo.currentIndexChanged.connect(lambda _v, r=row: self._on_source_changed(r))
-        source_row.addWidget(source_combo)
 
         route_combo = QComboBox()
         route_combo.addItem("— Sélectionner —", "")
@@ -1641,20 +1691,23 @@ class MainWindow(QMainWindow):
         if ridx >= 0:
             route_combo.setCurrentIndex(ridx)
         route_combo.setEnabled(str(source_combo.currentData() or "srt") == "route")
+        route_combo.setVisible(str(source_combo.currentData() or "srt") == "route")
         route_combo.currentIndexChanged.connect(lambda _v, r=row: self._on_card_changed(r))
-        source_row.addWidget(route_combo, stretch=1)
 
-        card_layout.addLayout(source_row)
+        fields.addWidget(source_lbl, 0, 0)
+        if is_route_source:
+            fields.addWidget(source_combo, 0, 1)
+            fields.addWidget(route_combo, 0, 2, 1, 4)
+        else:
+            fields.addWidget(source_combo, 0, 1, 1, 5)
+            route_combo.hide()
 
-        # ── Row 2: port + latency + screen ──
-        bottom_row = QHBoxLayout()
-        bottom_row.setSpacing(10)
+        # ── Row 2: port + latency + mute ──
 
         port_lbl = QLabel("Port")
         port_lbl.setObjectName("FormLabel")
         port_lbl.setFixedWidth(30)
         port_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        bottom_row.addWidget(port_lbl)
 
         port_spin = QSpinBox()
         port_spin.setRange(1, 65535)
@@ -1664,13 +1717,11 @@ class MainWindow(QMainWindow):
         port_spin.setFixedWidth(70)
         port_spin.setEnabled(not is_route_source)
         port_spin.valueChanged.connect(lambda v, r=row: self._on_card_changed(r))
-        bottom_row.addWidget(port_spin)
 
         lat_lbl = QLabel("Latence")
         lat_lbl.setObjectName("FormLabel")
         lat_lbl.setFixedWidth(48)
         lat_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        bottom_row.addWidget(lat_lbl)
 
         latency_spin = QSpinBox()
         latency_spin.setRange(0, 5000)
@@ -1681,19 +1732,24 @@ class MainWindow(QMainWindow):
         latency_spin.setFixedWidth(80)
         latency_spin.setEnabled(not is_route_source)
         latency_spin.valueChanged.connect(lambda v, r=row: self._on_card_changed(r))
-        bottom_row.addWidget(latency_spin)
 
         mute_chk = QCheckBox("Muet")
         mute_chk.setChecked(bool(stream.get("muteAudio")))
         mute_chk.setToolTip("Couper l'audio de ce flux")
         mute_chk.stateChanged.connect(lambda _v, r=row: self._on_card_changed(r))
-        bottom_row.addWidget(mute_chk)
+
+        fields.addWidget(port_lbl, 1, 0)
+        fields.addWidget(port_spin, 1, 1)
+        fields.addWidget(lat_lbl, 1, 2)
+        fields.addWidget(latency_spin, 1, 3)
+        fields.addWidget(mute_chk, 1, 4, 1, 2)
+
+        # ── Row 3: mode + rotation + screen ──
 
         mode_lbl = QLabel("Mode")
         mode_lbl.setObjectName("FormLabel")
         mode_lbl.setFixedWidth(38)
         mode_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        bottom_row.addWidget(mode_lbl)
 
         mode_combo = QComboBox()
         mode_combo.addItem("Fit", "fit")
@@ -1705,13 +1761,11 @@ class MainWindow(QMainWindow):
         if idx >= 0:
             mode_combo.setCurrentIndex(idx)
         mode_combo.currentIndexChanged.connect(lambda _v, r=row: self._on_card_changed(r))
-        bottom_row.addWidget(mode_combo)
 
         rot_lbl = QLabel("Rot")
         rot_lbl.setObjectName("FormLabel")
         rot_lbl.setFixedWidth(26)
         rot_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        bottom_row.addWidget(rot_lbl)
 
         rot_combo = QComboBox()
         rot_combo.addItem("0°", 0)
@@ -1727,13 +1781,11 @@ class MainWindow(QMainWindow):
         if ridx >= 0:
             rot_combo.setCurrentIndex(ridx)
         rot_combo.currentIndexChanged.connect(lambda _v, r=row: self._on_card_changed(r))
-        bottom_row.addWidget(rot_combo)
 
         screen_lbl = QLabel("Écran")
         screen_lbl.setObjectName("FormLabel")
         screen_lbl.setFixedWidth(38)
         screen_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        bottom_row.addWidget(screen_lbl)
 
         display_combo = QComboBox()
         display_combo.addItem("— Non assigné —", "")
@@ -1750,12 +1802,20 @@ class MainWindow(QMainWindow):
             self.config.get("mapping", {}).pop(stream_id, None)
 
         display_combo.currentIndexChanged.connect(lambda v, r=row: self._on_card_changed(r))
-        bottom_row.addWidget(display_combo, stretch=1)
 
-        card_layout.addLayout(bottom_row)
+        fields.addWidget(mode_lbl, 2, 0)
+        fields.addWidget(mode_combo, 2, 1)
+        fields.addWidget(rot_lbl, 2, 2)
+        fields.addWidget(rot_combo, 2, 3)
+        fields.addWidget(screen_lbl, 2, 4)
+        fields.addWidget(display_combo, 2, 5)
+
+        fields.setColumnStretch(5, 1)
+        card_layout.addLayout(fields)
 
         return {
             "card": card,
+            "fields": fields,
             "name_edit": name_edit,
             "port_spin": port_spin,
             "latency_spin": latency_spin,
@@ -1824,7 +1884,11 @@ class MainWindow(QMainWindow):
         self.pending_stream_starts[stream_id] = time.monotonic() + float(startup_seconds)
         self._set_card_starting(row)
 
-        result = core.player_manager.start_player(stream_for_player, display)
+        hwaccel = str((self.config.get("receiver") or {}).get("decode") or "cpu").strip().lower()
+        if hwaccel not in {"cpu", "gpu"}:
+            hwaccel = "cpu"
+
+        result = core.player_manager.start_player(stream_for_player, display, hwaccel=hwaccel)
         if not result.ok:
             self.pending_stream_starts.pop(stream_id, None)
             QMessageBox.warning(self, "Démarrage flux", "Impossible de démarrer le flux.\n\n" + (result.reason or "Erreur inconnue."))
@@ -1867,6 +1931,24 @@ class MainWindow(QMainWindow):
         card = self.stream_cards[row]
         source = str(card["source_combo"].currentData() or "srt")
         card["route_combo"].setEnabled(source == "route")
+        grid = card.get("fields")
+        if isinstance(grid, QGridLayout):
+            try:
+                grid.removeWidget(card["source_combo"])
+            except Exception:
+                pass
+            try:
+                grid.removeWidget(card["route_combo"])
+            except Exception:
+                pass
+
+            if source == "route":
+                grid.addWidget(card["source_combo"], 0, 1)
+                grid.addWidget(card["route_combo"], 0, 2, 1, 4)
+                card["route_combo"].show()
+            else:
+                grid.addWidget(card["source_combo"], 0, 1, 1, 5)
+                card["route_combo"].hide()
         card["port_spin"].setEnabled(source != "route")
         card["latency_spin"].setEnabled(source != "route")
         if source != "route":
