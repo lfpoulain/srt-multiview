@@ -5,11 +5,17 @@ Application locale Python pour router des flux SRT vers plusieurs écrans Window
 ## Fonctionnalités
 
 - **Réception SRT** : Écoute plusieurs flux SRT en mode `listener` (vous envoyez en `caller`)
+- **Routage SRT → UDP multicast** : Duplication d'un flux SRT via `ffmpeg` pour alimenter plusieurs écrans (`ffplay` lit le multicast)
+- **Source par flux** : Chaque flux peut lire en **SRT direct** ou depuis une **Route**
+- **Contrôle par flux** : Bouton ▶/⏹ par flux + statut (arrêté / démarrage / en cours)
+- **Rotation par flux** : 0° / 90° / 180° / 270°
+- **Modes d'affichage** : fit / fill / stretch
 - **Émission SRT** : Capture un écran et l'envoie en SRT via ffmpeg (mode `caller`)
 - **Multi-écrans** : Affiche chaque flux en plein écran sur un écran Windows différent
-- **UI Desktop** : Interface moderne avec cartes individuelles par flux, thème sombre Dracula
 - **Exclusion écran principal** : Option pour ne pas utiliser l'écran de travail
-- **Configuration persistante** : Ports, latence, mapping et paramètres d'émission sauvegardés
+- **Auto-mapping** : Peut créer automatiquement des flux si nécessaire
+- **Reset global** : Réinitialise toute la configuration et stoppe lectures/émission/routes
+- **Configuration persistante** : Flux, mapping, routes, options et paramètres d'émission sauvegardés
 
 ## Prérequis
 
@@ -76,10 +82,13 @@ Pour télécharger l'exe :
 
 ### Workflow — Réception
 
-1. **Configurer les flux** : Ajouter des flux SRT avec « + Ajouter un flux » (nom, port, latence)
-2. **Mapper les écrans** : Associer chaque flux à un écran via le sélecteur
-3. **Démarrer** : Cliquer sur « ▶ Démarrer tout »
-4. **Envoyer depuis la régie** : Utiliser OBS/vMix/etc. en mode `caller` vers `srt://IP:PORT`
+1. **Configurer les flux** : Ajouter des flux (« + Ajouter un flux »)
+2. **Choisir la source** :
+   - **SRT** : l'app écoute `srt://0.0.0.0:PORT` (listener)
+   - **Route** : sélectionner une route existante (voir section Routage)
+3. **Mapper les écrans** : Associer chaque flux à un écran via le sélecteur
+4. **Démarrer** : Cliquer sur « ▶ Démarrer tout » (ou ▶ sur un flux)
+5. **Envoyer depuis la régie** : Utiliser OBS/vMix/etc. en mode `caller` vers `srt://IP:PORT`
 
 ### Workflow — Émission
 
@@ -96,11 +105,30 @@ srt://192.168.1.100:9001?mode=caller&latency=120000
 
 ## Configuration
 
-Le fichier `config.json` stocke :
-- Les flux entrants (nom, port, latence)
+La configuration est stockée dans le fichier utilisateur :
+
+- Windows : `%USERPROFILE%\srt-multiview-config.json`
+
+Il stocke notamment :
+
+- Les flux (nom, source SRT/Route, port/latence, mode d'affichage, rotation)
 - Le mapping flux → écran
-- L'option d'exclusion de l'écran principal
+- Les noms d'écrans personnalisés
+- Les routes de routage (SRT in port/latence, UDP multicast out)
+- Les options (exclure écran principal, auto-start)
 - Les paramètres d'émission SRT (écran, hôte, port, latence, FPS, bitrate)
+
+`config.json` à la racine du repo est un exemple, il n'est pas utilisé par l'app.
+
+## Routage (SRT → UDP multicast)
+
+Le routage sert à **dupliquer** un flux SRT en une sortie UDP multicast lisible par plusieurs `ffplay`.
+
+- Une **Route** écoute un port SRT (listener)
+- `ffmpeg` repack en MPEG-TS et sort vers `udp://@239.x.x.x:PORT`
+- Plusieurs écrans peuvent lire la même route en parallèle
+
+Note : le démarrage via UDP peut prendre quelques secondes. L'UI affiche un état **"démarrage"** (loader) pendant ce temps.
 
 ## Notes techniques
 
