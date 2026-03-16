@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -987,7 +988,11 @@ class MainWindow(QMainWindow):
         rx_row.addWidget(rx_lbl)
         self.receiver_decode_combo = QComboBox()
         self.receiver_decode_combo.addItem("CPU", "cpu")
-        self.receiver_decode_combo.addItem("GPU", "gpu")
+        self.receiver_decode_combo.addItem("GPU (Auto)", "auto")
+        self.receiver_decode_combo.addItem("GPU (DXVA2)", "dxva2")
+        self.receiver_decode_combo.addItem("GPU (AMF)", "h264_amf")
+        self.receiver_decode_combo.addItem("GPU (CUVID)", "h264_cuvid")
+        self.receiver_decode_combo.addItem("GPU (QSV)", "h264_qsv")
         self.receiver_decode_combo.setFixedHeight(28)
         rx_current = str((self.config.get("receiver") or {}).get("decode") or "cpu").strip().lower()
         rxi = self.receiver_decode_combo.findData(rx_current)
@@ -1094,16 +1099,7 @@ class MainWindow(QMainWindow):
 
         sender_row4b = QHBoxLayout()
         sender_row4b.setSpacing(10)
-        sender_row4b.addWidget(_form_label("Audio"))
-        self.sender_audio_chk = QCheckBox("Système")
-        self.sender_audio_chk.setToolTip("Inclure l'audio système dans l'émission")
-        self.sender_audio_chk.stateChanged.connect(self.on_sender_changed)
-        sender_row4b.addWidget(self.sender_audio_chk, stretch=1)
-        sender_layout.addLayout(sender_row4b)
-
-        sender_row4c = QHBoxLayout()
-        sender_row4c.setSpacing(10)
-        sender_row4c.addWidget(_form_label("Encodeur"))
+        sender_row4b.addWidget(_form_label("Encodeur"))
         self.sender_encoder_combo = QComboBox()
         self.sender_encoder_combo.addItem("CPU", "cpu")
         self.sender_encoder_combo.addItem("GPU (Auto)", "auto")
@@ -1111,8 +1107,8 @@ class MainWindow(QMainWindow):
         self.sender_encoder_combo.addItem("GPU (AMF)", "amf")
         self.sender_encoder_combo.setFixedHeight(28)
         self.sender_encoder_combo.currentIndexChanged.connect(self.on_sender_changed)
-        sender_row4c.addWidget(self.sender_encoder_combo, stretch=1)
-        sender_layout.addLayout(sender_row4c)
+        sender_row4b.addWidget(self.sender_encoder_combo, stretch=1)
+        sender_layout.addLayout(sender_row4b)
 
         sender_row5 = QHBoxLayout()
         sender_row5.setSpacing(10)
@@ -1418,7 +1414,6 @@ class MainWindow(QMainWindow):
                 "latency": 120,
                 "fps": 30,
                 "bitrateK": 4000,
-                "includeSystemAudio": False,
             },
         }
         self.config = core.normalize_config(self.config)
@@ -1470,7 +1465,6 @@ class MainWindow(QMainWindow):
         self.sender_latency_spin.blockSignals(True)
         self.sender_fps_spin.blockSignals(True)
         self.sender_bitrate_spin.blockSignals(True)
-        self.sender_audio_chk.blockSignals(True)
         self.sender_encoder_combo.blockSignals(True)
         try:
             self.sender_display_combo.clear()
@@ -1499,8 +1493,6 @@ class MainWindow(QMainWindow):
             except Exception:
                 self.sender_bitrate_spin.setValue(4000)
 
-            self.sender_audio_chk.setChecked(bool(sender.get("includeSystemAudio", False)))
-
             enc = str(sender.get("encoder") or "cpu").strip().lower()
             idx = self.sender_encoder_combo.findData(enc)
             if idx >= 0:
@@ -1512,7 +1504,6 @@ class MainWindow(QMainWindow):
             self.sender_latency_spin.blockSignals(False)
             self.sender_fps_spin.blockSignals(False)
             self.sender_bitrate_spin.blockSignals(False)
-            self.sender_audio_chk.blockSignals(False)
             self.sender_encoder_combo.blockSignals(False)
 
         self.refresh_sender_status()
@@ -1525,7 +1516,6 @@ class MainWindow(QMainWindow):
         sender["latency"] = int(self.sender_latency_spin.value())
         sender["fps"] = int(self.sender_fps_spin.value())
         sender["bitrateK"] = int(self.sender_bitrate_spin.value())
-        sender["includeSystemAudio"] = bool(self.sender_audio_chk.isChecked())
         sender["encoder"] = str(self.sender_encoder_combo.currentData() or "cpu")
         self.schedule_save()
 
@@ -1590,7 +1580,6 @@ class MainWindow(QMainWindow):
         latency = int(sender.get("latency") or 120)
         fps = int(sender.get("fps") or 30)
         bitrate_k = int(sender.get("bitrateK") or 4000)
-        include_system_audio = bool(sender.get("includeSystemAudio", False))
         encoder = str(sender.get("encoder") or "cpu")
         result = core.sender_manager.start(
             display,
@@ -1599,7 +1588,6 @@ class MainWindow(QMainWindow):
             latency_ms=latency,
             fps=fps,
             bitrate_k=bitrate_k,
-            include_system_audio=include_system_audio,
             encoder=encoder,
         )
         if not result.ok:
@@ -1647,6 +1635,12 @@ class MainWindow(QMainWindow):
         start_btn.setToolTip("Démarrer/arrêter ce flux")
         start_btn.clicked.connect(lambda checked=False, r=row: self.toggle_stream(r))
         top_row.addWidget(start_btn)
+
+        log_btn = QPushButton("📋")
+        log_btn.setFixedSize(30, 24)
+        log_btn.setToolTip("Voir la commande et les logs ffplay")
+        log_btn.clicked.connect(lambda checked=False, r=row: self.show_stream_log(r))
+        top_row.addWidget(log_btn)
 
         delete_btn = QPushButton("✕")
         delete_btn.setObjectName("CardDeleteBtn")
@@ -1828,6 +1822,7 @@ class MainWindow(QMainWindow):
             "status_dot": status_dot,
             "status_label": status_label,
             "start_btn": start_btn,
+            "log_btn": log_btn,
             "stream_id": stream_id,
         }
 
@@ -1885,7 +1880,9 @@ class MainWindow(QMainWindow):
         self._set_card_starting(row)
 
         hwaccel = str((self.config.get("receiver") or {}).get("decode") or "cpu").strip().lower()
-        if hwaccel not in {"cpu", "gpu"}:
+        if hwaccel == "gpu":
+            hwaccel = "auto"
+        if hwaccel not in {"cpu", "auto", "dxva2", "h264_amf", "h264_cuvid", "h264_qsv"}:
             hwaccel = "cpu"
 
         result = core.player_manager.start_player(stream_for_player, display, hwaccel=hwaccel)
@@ -1893,6 +1890,63 @@ class MainWindow(QMainWindow):
             self.pending_stream_starts.pop(stream_id, None)
             QMessageBox.warning(self, "Démarrage flux", "Impossible de démarrer le flux.\n\n" + (result.reason or "Erreur inconnue."))
         self.refresh_status()
+
+    def show_stream_log(self, row: int):
+        streams = self.config.get("streams", [])
+        if row < 0 or row >= len(streams):
+            return
+
+        stream = streams[row]
+        stream_id = str(stream.get("id") or "")
+        if not stream_id:
+            return
+
+        info = core.player_manager.debug_info(stream_id)
+        stderr_lines = info.get("stderr") or []
+        launch_error = str(info.get("launch_error") or "").strip()
+        command_text = str(info.get("command_text") or "").strip()
+        debug_text = "\n\n".join(
+            [
+                f"Binaire: {info.get('path') or ''}",
+                f"PID: {info.get('pid') or '—'}",
+                f"En cours: {'oui' if info.get('running') else 'non'}",
+                f"Code retour: {info.get('returncode') if info.get('returncode') is not None else '—'}",
+                "Commande:",
+                command_text or "—",
+                "Erreur de lancement:" if launch_error else "",
+                launch_error,
+                "stderr:",
+                "\n".join(str(line) for line in stderr_lines) if stderr_lines else "—",
+            ]
+        ).strip()
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Logs ffplay — {stream.get('name') or stream_id}")
+        dlg.setMinimumSize(760, 520)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        text = QPlainTextEdit()
+        text.setReadOnly(True)
+        text.setLineWrapMode(QPlainTextEdit.NoWrap)
+        text.setPlainText(debug_text)
+        layout.addWidget(text)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+
+        copy_btn = QPushButton("Copier")
+        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(debug_text))
+        btn_row.addWidget(copy_btn)
+
+        close_btn = QPushButton("Fermer")
+        close_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(close_btn)
+
+        layout.addLayout(btn_row)
+        dlg.exec()
 
     def reload_table(self):
         self.config = core.normalize_config(self.config)

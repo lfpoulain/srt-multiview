@@ -1,6 +1,8 @@
 import json
 import subprocess
 import sys
+import threading
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,11 +20,36 @@ def _win_creationflags() -> int:
 def _terminate_proc(proc: subprocess.Popen | None) -> None:
     if not proc or proc.poll() is not None:
         return
-    proc.terminate()
+
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                [
+                    "taskkill",
+                    "/PID",
+                    str(proc.pid),
+                    "/T",
+                    "/F",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=_win_creationflags(),
+                check=False,
+            )
+        except Exception:
+            pass
+
+    try:
+        proc.terminate()
+    except Exception:
+        pass
     try:
         proc.wait(timeout=2)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        try:
+            proc.kill()
+        except Exception:
+            pass
 
 
 def load_config() -> dict:
@@ -123,11 +150,10 @@ def normalize_config(config: dict) -> dict:
     sender.setdefault("latency", 120)
     sender.setdefault("fps", 30)
     sender.setdefault("bitrateK", 4000)
-    sender.setdefault("includeSystemAudio", False)
     sender.setdefault("encoder", "cpu")
     sender["displayId"] = str(sender.get("displayId") or "")
     sender["host"] = str(sender.get("host") or "127.0.0.1")
-    sender["includeSystemAudio"] = bool(sender.get("includeSystemAudio", False))
+    sender.pop("includeSystemAudio", None)
     sender_encoder = str(sender.get("encoder") or "cpu").strip().lower()
     if sender_encoder not in {"cpu", "nvenc", "amf", "auto"}:
         sender_encoder = "cpu"
@@ -153,7 +179,9 @@ def normalize_config(config: dict) -> dict:
     receiver = dict(config.get("receiver") or {})
     receiver.setdefault("decode", "cpu")
     decode = str(receiver.get("decode") or "cpu").strip().lower()
-    if decode not in {"cpu", "gpu"}:
+    if decode == "gpu":
+        decode = "auto"
+    if decode not in {"cpu", "auto", "dxva2", "h264_amf", "h264_cuvid", "h264_qsv"}:
         decode = "cpu"
     receiver["decode"] = decode
     config["receiver"] = receiver
@@ -282,11 +310,62 @@ class PlayerManager:
     def __init__(self, ffplay_path: Path):
         self.ffplay_path = ffplay_path
         self.players: dict[str, subprocess.Popen] = {}
+        self.player_logs: dict[str, dict] = {}
+
+    def _set_log_info(self, stream_id: str, **kwargs) -> None:
+        info = dict(self.player_logs.get(stream_id) or {})
+        info.setdefault("stderr", deque(maxlen=120))
+        info.update(kwargs)
+        self.player_logs[stream_id] = info
+
+    def _capture_stderr(self, stream_id: str, proc: subprocess.Popen) -> None:
+        stderr = getattr(proc, "stderr", None)
+        if stderr is None:
+            return
+        try:
+            for line in stderr:
+                text = str(line).rstrip()
+                if not text:
+                    continue
+                info = self.player_logs.get(stream_id)
+                if not info:
+                    continue
+                buffer = info.get("stderr")
+                if isinstance(buffer, deque):
+                    buffer.append(text)
+        except Exception:
+            pass
+        finally:
+            try:
+                stderr.close()
+            except Exception:
+                pass
+
+    def debug_info(self, stream_id: str) -> dict:
+        info = dict(self.player_logs.get(stream_id) or {})
+        proc = self.players.get(stream_id)
+        if proc is not None:
+            info["running"] = proc.poll() is None
+            info["pid"] = proc.pid
+            if proc.poll() is not None:
+                info["returncode"] = proc.returncode
+        info.setdefault("path", str(self.ffplay_path))
+        stderr_lines = info.get("stderr")
+        if isinstance(stderr_lines, deque):
+            info["stderr"] = list(stderr_lines)
+        elif not isinstance(stderr_lines, list):
+            info["stderr"] = []
+        return info
 
     def stop_player(self, stream_id: str) -> None:
         proc = self.players.get(stream_id)
         _terminate_proc(proc)
         self.players.pop(stream_id, None)
+        info = self.player_logs.get(stream_id)
+        if info is not None:
+            info["running"] = False
+            if proc is not None and proc.poll() is not None:
+                info["returncode"] = proc.returncode
 
     def stop_all(self) -> None:
         for stream_id in list(self.players.keys()):
@@ -308,7 +387,7 @@ class PlayerManager:
         port = int(stream.get("port"))
         return (f"srt://0.0.0.0:{port}?mode=listener&latency={latency_ms * 1000}", None)
 
-    def _vf(self, stream: dict, display: dict) -> str:
+    def _vf(self, stream: dict, display: dict, *, hwaccel: str = "cpu") -> str:
         display_w = int(display["width"])
         display_h = int(display["height"])
         mode = str(stream.get("displayMode") or "fit").strip().lower()
@@ -336,11 +415,17 @@ class PlayerManager:
             )
 
         if rotate == 90:
-            return f"transpose=1,{vf}"
-        if rotate == 270:
-            return f"transpose=2,{vf}"
-        if rotate == 180:
-            return f"transpose=1,transpose=1,{vf}"
+            vf = f"transpose=1,{vf}"
+        elif rotate == 270:
+            vf = f"transpose=2,{vf}"
+        elif rotate == 180:
+            vf = f"transpose=1,transpose=1,{vf}"
+
+        hwaccel = str(hwaccel or "cpu").strip().lower()
+        if hwaccel == "h264_qsv":
+            return f"hwdownload,format=nv12,format=yuv420p,{vf}"
+        if hwaccel in {"auto", "dxva2", "h264_amf", "h264_cuvid"}:
+            return f"format=yuv420p,{vf}"
         return vf
 
     def start_player(self, stream: dict, display: dict, *, hwaccel: str = "cpu") -> PlayerLaunchResult:
@@ -354,24 +439,43 @@ class PlayerManager:
         if input_err:
             return PlayerLaunchResult(ok=False, reason=input_err)
 
-        vf = self._vf(stream, display)
+        hwaccel = str(hwaccel or "cpu").strip().lower()
+        if hwaccel == "gpu":
+            hwaccel = "auto"
+        if hwaccel not in {"cpu", "auto", "dxva2", "h264_amf", "h264_cuvid", "h264_qsv"}:
+            hwaccel = "cpu"
+
+        vf = self._vf(stream, display, hwaccel=hwaccel)
 
         source = str(stream.get("source") or "srt").strip().lower()
         if source not in {"srt", "udp"}:
             source = "srt"
 
-        hwaccel = str(hwaccel or "cpu").strip().lower()
-        if hwaccel not in {"cpu", "gpu"}:
-            hwaccel = "cpu"
-
         args = [
             str(self.ffplay_path),
         ]
 
-        if hwaccel == "gpu":
+        if hwaccel == "auto":
             args.extend([
                 "-hwaccel",
                 "auto",
+            ])
+        elif hwaccel == "dxva2":
+            args.extend([
+                "-hwaccel",
+                "dxva2",
+            ])
+        elif hwaccel == "h264_qsv":
+            args.extend([
+                "-hwaccel",
+                "qsv",
+                "-vcodec",
+                "h264_qsv",
+            ])
+        elif hwaccel in {"h264_amf", "h264_cuvid"}:
+            args.extend([
+                "-vcodec",
+                hwaccel,
             ])
 
         args.extend([
@@ -380,9 +484,9 @@ class PlayerManager:
             "-flags",
             "low_delay",
             "-probesize",
-            "32",
+            "131072",
             "-analyzeduration",
-            "0",
+            "250000",
             "-hide_banner",
             "-loglevel",
             "warning",
@@ -414,18 +518,37 @@ class PlayerManager:
             input_url,
         ])
 
+        self._set_log_info(
+            stream_id,
+            path=str(self.ffplay_path),
+            command=list(args),
+            command_text=subprocess.list2cmdline(args),
+            running=False,
+            pid=None,
+            returncode=None,
+            launch_error=None,
+            stderr=deque(maxlen=120),
+        )
+
         creationflags = _win_creationflags()
 
         try:
             proc = subprocess.Popen(
                 args,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
                 creationflags=creationflags,
             )
             self.players[stream_id] = proc
+            self._set_log_info(stream_id, running=True, pid=proc.pid, launch_error=None)
+            threading.Thread(target=self._capture_stderr, args=(stream_id, proc), daemon=True).start()
             return PlayerLaunchResult(ok=True)
         except Exception as e:
+            self._set_log_info(stream_id, running=False, returncode=None, launch_error=str(e))
             return PlayerLaunchResult(ok=False, reason=str(e))
 
     def status(self) -> dict[str, bool]:
@@ -434,6 +557,10 @@ class PlayerManager:
             alive = proc.poll() is None
             status[stream_id] = alive
             if not alive:
+                info = self.player_logs.get(stream_id)
+                if info is not None:
+                    info["running"] = False
+                    info["returncode"] = proc.returncode
                 self.players.pop(stream_id, None)
         return status
 
@@ -507,7 +634,6 @@ class SenderManager:
         latency_ms: int = 120,
         fps: int = 30,
         bitrate_k: int = 4000,
-        include_system_audio: bool = False,
         encoder: str = "cpu",
     ) -> SenderLaunchResult:
         if not self.ffmpeg_path.exists():
@@ -516,20 +642,18 @@ class SenderManager:
 
         self.stop()
 
-        displays = get_displays(exclude_primary=False)
-        origin_x, origin_y = self._virtual_desktop_origin(displays)
-        crop_x = int(display["x"]) - origin_x
-        crop_y = int(display["y"]) - origin_y
+        capture_x = int(display.get("x", 0))
+        capture_y = int(display.get("y", 0))
         width = int(display["width"])
         height = int(display["height"])
 
         latency_us = max(0, int(latency_ms)) * 1000
         fps = max(1, int(fps))
         bitrate_k = max(100, int(bitrate_k))
+        gop = max(1, fps)
         host = (host or "127.0.0.1").strip()
         port = int(port)
 
-        vf = f"crop={width}:{height}:{crop_x}:{crop_y}"
         out_url = (
             f"srt://{host}:{port}?mode=caller&latency={latency_us}"
             f"&transtype=live&pkt_size=1316"
@@ -540,35 +664,28 @@ class SenderManager:
             "-hide_banner",
             "-loglevel",
             "warning",
+            "-fflags",
+            "nobuffer",
+            "-flags",
+            "low_delay",
+            "-thread_queue_size",
+            "128",
             "-f",
             "gdigrab",
             "-framerate",
             str(fps),
+            "-offset_x",
+            str(capture_x),
+            "-offset_y",
+            str(capture_y),
+            "-video_size",
+            f"{width}x{height}",
             "-draw_mouse",
             "1",
             "-i",
             "desktop",
+            "-an",
         ]
-
-        if include_system_audio:
-            args.extend(
-                [
-                    "-f",
-                    "wasapi",
-                    "-i",
-                    "default",
-                ]
-            )
-
-        args.extend([
-            "-vf",
-            vf,
-        ])
-
-        if include_system_audio:
-            args.extend(["-map", "0:v:0", "-map", "1:a:0"])
-        else:
-            args.append("-an")
 
         enc = str(encoder or "cpu").strip().lower()
         if enc not in {"cpu", "nvenc", "amf", "auto"}:
@@ -593,18 +710,22 @@ class SenderManager:
                 "ll",
                 "-rc",
                 "cbr",
+                "-zerolatency",
+                "1",
                 "-pix_fmt",
                 "yuv420p",
                 "-g",
-                str(fps * 2),
+                str(gop),
                 "-keyint_min",
-                str(fps * 2),
+                str(gop),
+                "-bf",
+                "0",
                 "-b:v",
                 f"{bitrate_k}k",
                 "-maxrate",
                 f"{bitrate_k}k",
                 "-bufsize",
-                f"{bitrate_k * 2}k",
+                f"{bitrate_k}k",
             ])
         elif enc == "amf":
             args.extend([
@@ -615,15 +736,17 @@ class SenderManager:
                 "-pix_fmt",
                 "yuv420p",
                 "-g",
-                str(fps * 2),
+                str(gop),
                 "-keyint_min",
-                str(fps * 2),
+                str(gop),
+                "-bf",
+                "0",
                 "-b:v",
                 f"{bitrate_k}k",
                 "-maxrate",
                 f"{bitrate_k}k",
                 "-bufsize",
-                f"{bitrate_k * 2}k",
+                f"{bitrate_k}k",
             ])
         else:
             args.extend([
@@ -636,32 +759,28 @@ class SenderManager:
                 "-pix_fmt",
                 "yuv420p",
                 "-g",
-                str(fps * 2),
+                str(gop),
                 "-keyint_min",
-                str(fps * 2),
+                str(gop),
+                "-bf",
+                "0",
                 "-b:v",
                 f"{bitrate_k}k",
                 "-maxrate",
                 f"{bitrate_k}k",
                 "-bufsize",
-                f"{bitrate_k * 2}k",
+                f"{bitrate_k}k",
             ])
 
-        if include_system_audio:
-            args.extend(
-                [
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "128k",
-                    "-ac",
-                    "2",
-                    "-ar",
-                    "48000",
-                ]
-            )
-
         args.extend([
+            "-flush_packets",
+            "1",
+            "-muxdelay",
+            "0",
+            "-muxpreload",
+            "0",
+            "-mpegts_flags",
+            "+resend_headers",
             "-f",
             "mpegts",
             out_url,
