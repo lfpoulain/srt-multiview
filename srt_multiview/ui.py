@@ -8,6 +8,8 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QInputDialog,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -19,6 +21,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QStackedLayout,
@@ -38,6 +41,24 @@ QWidget {
     background: #0b1120;
     color: #e2e8f0;
     font-size: 12px;
+}
+QCheckBox {
+    spacing: 8px;
+    padding: 3px 0px;
+}
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+}
+QCheckBox::indicator:unchecked {
+    border: 1px solid #334155;
+    border-radius: 4px;
+    background: #0b1120;
+}
+QCheckBox::indicator:checked {
+    border: 1px solid #1d4ed8;
+    border-radius: 4px;
+    background: #2563eb;
 }
 QLabel#Title {
     font-size: 22px;
@@ -411,6 +432,9 @@ QLabel#StatusDotRunning {
 QLabel#StatusDotStopped {
     color: #44475a;
 }
+QLabel#StatusDotStarting {
+    color: #f59e0b;
+}
 QPushButton#CardDeleteBtn {
     color: #6272a4;
 }
@@ -432,6 +456,366 @@ def apply_theme(app: QApplication) -> None:
     )
 
 
+class RoutingDialog(QDialog):
+    def __init__(self, parent: "MainWindow"):
+        super().__init__(parent)
+        self.main = parent
+        self.setWindowTitle("Routage SRT → UDP multicast")
+        self.setMinimumSize(760, 460)
+
+        root = QFrame()
+        root.setObjectName("Card")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+        layout.addWidget(root)
+
+        outer = QHBoxLayout(root)
+        outer.setContentsMargins(14, 14, 14, 14)
+        outer.setSpacing(10)
+
+        left = QVBoxLayout()
+        left.setSpacing(8)
+        self.routes_list = QListWidget()
+        self.routes_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.routes_list.currentRowChanged.connect(self.on_select_route)
+        self.routes_list.setMinimumWidth(260)
+        left.addWidget(self.routes_list, stretch=1)
+
+        left_btns = QHBoxLayout()
+        left_btns.setSpacing(8)
+        self.btn_add = QPushButton("+ Ajouter")
+        self.btn_add.setObjectName("PrimaryButton")
+        self.btn_add.setMinimumHeight(34)
+        self.btn_add.clicked.connect(self.add_route)
+        left_btns.addWidget(self.btn_add)
+        self.btn_delete = QPushButton("Supprimer")
+        self.btn_delete.setObjectName("DangerButton")
+        self.btn_delete.setMinimumHeight(34)
+        self.btn_delete.clicked.connect(self.delete_route)
+        left_btns.addWidget(self.btn_delete)
+        left.addLayout(left_btns)
+
+        right = QVBoxLayout()
+        right.setSpacing(8)
+
+        self.name_edit = QLineEdit()
+        self.name_edit.setFixedHeight(28)
+        self.input_port_spin = QSpinBox()
+        self.input_port_spin.setRange(1, 65535)
+        self.input_port_spin.setButtonSymbols(QSpinBox.NoButtons)
+        self.input_port_spin.setFixedHeight(28)
+        self.input_latency_spin = QSpinBox()
+        self.input_latency_spin.setRange(0, 5000)
+        self.input_latency_spin.setSuffix(" ms")
+        self.input_latency_spin.setButtonSymbols(QSpinBox.NoButtons)
+        self.input_latency_spin.setFixedHeight(28)
+
+        self.maddr_edit = QLineEdit()
+        self.maddr_edit.setPlaceholderText("ex: 239.10.10.10")
+        self.maddr_edit.setFixedHeight(28)
+        self.mport_spin = QSpinBox()
+        self.mport_spin.setRange(1, 65535)
+        self.mport_spin.setButtonSymbols(QSpinBox.NoButtons)
+        self.mport_spin.setFixedHeight(28)
+        self.ttl_spin = QSpinBox()
+        self.ttl_spin.setRange(1, 255)
+        self.ttl_spin.setButtonSymbols(QSpinBox.NoButtons)
+        self.ttl_spin.setFixedHeight(28)
+        self.pkt_spin = QSpinBox()
+        self.pkt_spin.setRange(188, 9000)
+        self.pkt_spin.setButtonSymbols(QSpinBox.NoButtons)
+        self.pkt_spin.setFixedHeight(28)
+
+        def _row_widget(label: str, widget: QWidget) -> QWidget:
+            row_w = QWidget()
+            row = QHBoxLayout(row_w)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(8)
+            lbl = QLabel(label)
+            lbl.setObjectName("FormLabel")
+            lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            lbl.setFixedWidth(110)
+            row.addWidget(lbl)
+            row.addWidget(widget, stretch=1)
+            return row_w
+
+        right.addWidget(_row_widget("Nom", self.name_edit))
+        right.addWidget(_row_widget("SRT in port", self.input_port_spin))
+        right.addWidget(_row_widget("SRT latence", self.input_latency_spin))
+
+        self.advanced_chk = QCheckBox("Options avancées")
+        self.advanced_chk.setMinimumHeight(24)
+        right.addWidget(self.advanced_chk)
+
+        self._adv_row_maddr = _row_widget("Multicast IP", self.maddr_edit)
+        self._adv_row_mport = _row_widget("Multicast port", self.mport_spin)
+        self._adv_row_ttl = _row_widget("TTL", self.ttl_spin)
+        self._adv_row_pkt = _row_widget("pkt_size", self.pkt_spin)
+        right.addWidget(self._adv_row_maddr)
+        right.addWidget(self._adv_row_mport)
+        right.addWidget(self._adv_row_ttl)
+        right.addWidget(self._adv_row_pkt)
+
+        def _set_advanced_visible(visible: bool):
+            self._adv_row_maddr.setVisible(visible)
+            self._adv_row_mport.setVisible(visible)
+            self._adv_row_ttl.setVisible(visible)
+            self._adv_row_pkt.setVisible(visible)
+
+        self.advanced_chk.toggled.connect(_set_advanced_visible)
+        self.advanced_chk.setChecked(False)
+        _set_advanced_visible(False)
+
+        self.status_label = QLabel("")
+        self.status_label.setObjectName("Subtitle")
+        self.status_label.setWordWrap(True)
+        self.status_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.status_label.setMinimumHeight(34)
+        right.addWidget(self.status_label)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        self.btn_toggle = QPushButton("▶ Démarrer")
+        self.btn_toggle.setObjectName("SuccessButton")
+        self.btn_toggle.setMinimumHeight(36)
+        self.btn_toggle.clicked.connect(self.toggle_route)
+        actions.addWidget(self.btn_toggle)
+        self.btn_save = QPushButton("Enregistrer")
+        self.btn_save.setMinimumHeight(36)
+        self.btn_save.clicked.connect(self.save_route)
+        actions.addWidget(self.btn_save)
+        self.btn_close = QPushButton("Fermer")
+        self.btn_close.setMinimumHeight(36)
+        self.btn_close.clicked.connect(self.accept)
+        actions.addWidget(self.btn_close)
+        actions.addStretch(1)
+        right.addLayout(actions)
+
+        outer.addLayout(left, stretch=0)
+        outer.addLayout(right, stretch=1)
+
+        self.refresh_routes()
+
+    def _routes(self) -> list[dict]:
+        return list(self.main.config.get("routes", []) or [])
+
+    def _selected_route_id(self) -> str:
+        item = self.routes_list.currentItem()
+        if not item:
+            return ""
+        return str(item.data(Qt.UserRole) or "")
+
+    def refresh_routes(self):
+        self.routes_list.blockSignals(True)
+        try:
+            self.routes_list.clear()
+            status = core.route_manager.status()
+            for r in self._routes():
+                rid = str(r.get("id") or "")
+                name = str(r.get("name") or rid)
+                running = bool(status.get(rid, False))
+                label = f"▶ {name}" if running else f"⏹ {name}"
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, rid)
+                self.routes_list.addItem(item)
+        finally:
+            self.routes_list.blockSignals(False)
+
+        if self.routes_list.count() > 0 and self.routes_list.currentRow() < 0:
+            self.routes_list.setCurrentRow(0)
+        self.on_select_route(self.routes_list.currentRow())
+
+    def on_select_route(self, _row: int):
+        rid = self._selected_route_id()
+        route = next((r for r in self._routes() if str(r.get("id")) == rid), None)
+        if not route:
+            self.name_edit.setText(self.name_edit.text() or f"Route {self.routes_list.count() + 1}")
+            self.input_port_spin.setValue(int(self.input_port_spin.value() or 9001))
+            self.input_latency_spin.setValue(int(self.input_latency_spin.value() or 120))
+            if not self.maddr_edit.text().strip():
+                self.maddr_edit.setText("239.10.10.10")
+            if int(self.mport_spin.value() or 0) <= 0:
+                self.mport_spin.setValue(1234)
+            if int(self.ttl_spin.value() or 0) <= 0:
+                self.ttl_spin.setValue(1)
+            if int(self.pkt_spin.value() or 0) <= 0:
+                self.pkt_spin.setValue(1316)
+
+            self.status_label.setText("Aucune route enregistrée. Renseigne les champs puis clique « Enregistrer ».")
+            self.btn_toggle.setEnabled(True)
+            self.btn_delete.setEnabled(False)
+            self.btn_save.setEnabled(True)
+            return
+
+        self.btn_toggle.setEnabled(True)
+        self.btn_delete.setEnabled(True)
+        self.btn_save.setEnabled(True)
+
+        self.name_edit.setText(str(route.get("name") or ""))
+        self.input_port_spin.setValue(int(route.get("inputPort") or 9001))
+        self.input_latency_spin.setValue(int(route.get("inputLatency") or 120))
+        self.maddr_edit.setText(str(route.get("multicastAddr") or "239.10.10.10"))
+        self.mport_spin.setValue(int(route.get("multicastPort") or 1234))
+        self.ttl_spin.setValue(int(route.get("ttl") or 1))
+        self.pkt_spin.setValue(int(route.get("pktSize") or 1316))
+
+        running = bool(core.route_manager.status().get(rid, False))
+        if running:
+            self.btn_toggle.setText("⏹ Arrêter")
+            self.btn_toggle.setObjectName("DangerButton")
+            self.status_label.setText(
+                f"En cours. Sortie : udp://@{self.maddr_edit.text().strip()}:{self.mport_spin.value()}"
+            )
+        else:
+            self.btn_toggle.setText("▶ Démarrer")
+            self.btn_toggle.setObjectName("SuccessButton")
+            last = core.route_manager.last_error.get(rid)
+            if last:
+                self.status_label.setText("Arrêtée. Dernière erreur : " + str(last))
+            else:
+                self.status_label.setText("Arrêtée.")
+        self.btn_toggle.style().unpolish(self.btn_toggle)
+        self.btn_toggle.style().polish(self.btn_toggle)
+
+    def add_route(self):
+        now = int(time.time() * 1000)
+        rid = f"route-{now}"
+        name, ok = QInputDialog.getText(self, "Nouvelle route", "Nom de la route :", text=f"Route {self.routes_list.count() + 1}")
+        if not ok:
+            return
+        name = (name or "").strip() or rid
+
+        existing_routes = self.main.config.get("routes") or []
+        used_in_ports: set[int] = set()
+        for r in existing_routes:
+            if isinstance(r, dict):
+                try:
+                    used_in_ports.add(int(r.get("inputPort") or 0))
+                except Exception:
+                    pass
+        for s in (self.main.config.get("streams") or []):
+            if not isinstance(s, dict):
+                continue
+            if str(s.get("source") or "srt").strip().lower() != "srt":
+                continue
+            try:
+                used_in_ports.add(int(s.get("port") or 0))
+            except Exception:
+                pass
+
+        in_port = 9001
+        while in_port in used_in_ports:
+            in_port += 1
+
+        used_mcast_ports: set[int] = set()
+        for r in existing_routes:
+            if isinstance(r, dict):
+                try:
+                    used_mcast_ports.add(int(r.get("multicastPort") or 0))
+                except Exception:
+                    pass
+        mcast_port = 1234
+        while mcast_port in used_mcast_ports:
+            mcast_port += 1
+
+        self.main.config.setdefault("routes", []).append(
+            {
+                "id": rid,
+                "name": name,
+                "inputPort": in_port,
+                "inputLatency": 120,
+                "multicastAddr": "239.10.10.10",
+                "multicastPort": mcast_port,
+                "pktSize": 1316,
+                "ttl": 1,
+            }
+        )
+        self.main.config = core.normalize_config(self.main.config)
+        core.save_config(self.main.config)
+        self.refresh_routes()
+        for i in range(self.routes_list.count()):
+            if str(self.routes_list.item(i).data(Qt.UserRole)) == rid:
+                self.routes_list.setCurrentRow(i)
+                break
+
+    def delete_route(self):
+        rid = self._selected_route_id()
+        if not rid:
+            return
+        route = next((r for r in self._routes() if str(r.get("id")) == rid), None)
+        name = str((route or {}).get("name") or rid)
+        reply = QMessageBox.question(
+            self,
+            "Suppression",
+            f"Supprimer la route « {name} » ?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        core.route_manager.stop_route(rid)
+        self.main.config["routes"] = [r for r in self._routes() if str(r.get("id")) != rid]
+        for s in self.main.config.get("streams", []) or []:
+            if str(s.get("source")) == "route" and str(s.get("sourceRouteId")) == rid:
+                s["sourceRouteId"] = ""
+                s["source"] = "srt"
+        self.main.config = core.normalize_config(self.main.config)
+        core.save_config(self.main.config)
+        self.refresh_routes()
+
+    def save_route(self):
+        rid = self._selected_route_id()
+        routes = self._routes()
+        route = next((r for r in routes if str(r.get("id")) == rid), None) if rid else None
+
+        if not route:
+            now = int(time.time() * 1000)
+            rid = f"route-{now}"
+            route = {"id": rid}
+            routes.append(route)
+
+        route["name"] = self.name_edit.text().strip() or rid
+        route["inputPort"] = int(self.input_port_spin.value())
+        route["inputLatency"] = int(self.input_latency_spin.value())
+        route["multicastAddr"] = self.maddr_edit.text().strip() or "239.10.10.10"
+        route["multicastPort"] = int(self.mport_spin.value())
+        route["ttl"] = int(self.ttl_spin.value())
+        route["pktSize"] = int(self.pkt_spin.value())
+        self.main.config["routes"] = routes
+        self.main.config = core.normalize_config(self.main.config)
+        core.save_config(self.main.config)
+        self.refresh_routes()
+
+        for i in range(self.routes_list.count()):
+            if str(self.routes_list.item(i).data(Qt.UserRole)) == rid:
+                self.routes_list.setCurrentRow(i)
+                break
+
+    def toggle_route(self):
+        rid = self._selected_route_id()
+        if not rid:
+            self.save_route()
+            rid = self._selected_route_id()
+            if not rid:
+                return
+        route = next((r for r in self._routes() if str(r.get("id")) == rid), None)
+        if not route:
+            return
+        running = bool(core.route_manager.status().get(rid, False))
+        if running:
+            core.route_manager.stop_route(rid)
+            self.refresh_routes()
+            return
+        self.save_route()
+        route = next((r for r in self._routes() if str(r.get("id")) == rid), None)
+        if not route:
+            return
+        result = core.route_manager.start_route(route)
+        if not result.ok:
+            QMessageBox.warning(self, "Routage", "Impossible de démarrer la route.\n\n" + (result.reason or "Erreur inconnue."))
+        self.refresh_routes()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -440,14 +824,25 @@ class MainWindow(QMainWindow):
             self.setWindowIcon(QIcon(str(APP_ICON_ICO_PATH)))
         elif APP_ICON_PNG_PATH.exists():
             self.setWindowIcon(QIcon(str(APP_ICON_PNG_PATH)))
-        self.resize(1100, 700)
-        self.setMinimumSize(960, 620)
+        screen = QApplication.primaryScreen()
+        available_h = 900
+        if screen is not None:
+            try:
+                available_h = int(screen.availableGeometry().height())
+            except Exception:
+                available_h = 900
+
+        target_h = min(max(780, int(available_h * 0.88)), 980)
+        self.resize(1260, target_h)
+        self.setMinimumSize(1100, min(700, target_h))
 
         self.config = core.load_config()
         self.displays = []
         self.sender_displays = []
         self.is_running = False
         self.sender_is_running = False
+        self.pending_stream_starts: dict[str, float] = {}
+        self.global_start_until: float | None = None
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_status)
@@ -539,9 +934,40 @@ class MainWindow(QMainWindow):
         displays_layout.setSpacing(4)
         self.displays_list = QListWidget()
         self.displays_list.setSpacing(2)
-        self.displays_list.setSelectionMode(QAbstractItemView.NoSelection)
+        self.displays_list.setSelectionMode(QAbstractItemView.SingleSelection)
         self.displays_list.setMaximumHeight(140)
         displays_layout.addWidget(self.displays_list)
+
+        displays_actions = QHBoxLayout()
+        displays_actions.setSpacing(8)
+
+        self.btn_auto_map = QPushButton("↪  Auto-mapper")
+        self.btn_auto_map.setObjectName("PrimaryButton")
+        self.btn_auto_map.setMinimumHeight(34)
+        self.btn_auto_map.clicked.connect(self.auto_map_streams)
+        displays_actions.addWidget(self.btn_auto_map)
+
+        self.btn_rename_display = QPushButton("✎  Renommer")
+        self.btn_rename_display.setMinimumHeight(34)
+        self.btn_rename_display.clicked.connect(self.rename_selected_display)
+        displays_actions.addWidget(self.btn_rename_display)
+
+        self.btn_routing = QPushButton("🧭  Routage")
+        self.btn_routing.setMinimumHeight(34)
+        self.btn_routing.clicked.connect(self.open_routing_dialog)
+        displays_actions.addWidget(self.btn_routing)
+
+        displays_layout.addLayout(displays_actions)
+
+        # ── Routing status group ──
+        routes_group = QGroupBox("🧭  Routage")
+        routes_layout = QVBoxLayout(routes_group)
+        routes_layout.setSpacing(6)
+        self.routes_status_list = QListWidget()
+        self.routes_status_list.setSpacing(2)
+        self.routes_status_list.setSelectionMode(QAbstractItemView.NoSelection)
+        self.routes_status_list.setMaximumHeight(150)
+        routes_layout.addWidget(self.routes_status_list)
 
         # ── Preferences group ──
         prefs_group = QGroupBox("⚙  Préférences")
@@ -550,6 +976,22 @@ class MainWindow(QMainWindow):
         self.exclude_primary.setChecked(bool(self.config.get("excludePrimaryDisplay", True)))
         self.exclude_primary.stateChanged.connect(self.on_exclude_primary_changed)
         prefs_layout.addWidget(self.exclude_primary)
+
+        self.auto_start_receiver_chk = QCheckBox("Auto-start réception")
+        self.auto_start_receiver_chk.setChecked(bool(self.config.get("autoStartReceiver", False)))
+        self.auto_start_receiver_chk.stateChanged.connect(self.on_auto_start_changed)
+        prefs_layout.addWidget(self.auto_start_receiver_chk)
+
+        self.auto_start_sender_chk = QCheckBox("Auto-start émission")
+        self.auto_start_sender_chk.setChecked(bool(self.config.get("autoStartSender", False)))
+        self.auto_start_sender_chk.stateChanged.connect(self.on_auto_start_changed)
+        prefs_layout.addWidget(self.auto_start_sender_chk)
+
+        self.btn_reset_config = QPushButton("↺  Réinitialiser")
+        self.btn_reset_config.setObjectName("DangerButton")
+        self.btn_reset_config.setMinimumHeight(34)
+        self.btn_reset_config.clicked.connect(self.reset_configuration)
+        prefs_layout.addWidget(self.btn_reset_config)
 
         # ── Sender group ──
         sender_group = QGroupBox("📡  Émission SRT")
@@ -653,6 +1095,7 @@ class MainWindow(QMainWindow):
         sender_layout.addLayout(sender_row5)
 
         left_layout.addWidget(displays_group)
+        left_layout.addWidget(routes_group)
         left_layout.addWidget(prefs_group)
         left_layout.addWidget(sender_group)
         left_layout.addStretch()
@@ -719,10 +1162,15 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
 
-        left_scroll.setMinimumWidth(310)
-        left_scroll.setMaximumWidth(340)
+        left_scroll.setMinimumWidth(360)
+        left_scroll.setMaximumWidth(360)
         streams_panel.setMinimumWidth(500)
-        splitter.setSizes([320, 760])
+        splitter.setSizes([360, 720])
+
+        try:
+            splitter.handle(1).setEnabled(False)
+        except Exception:
+            pass
 
         self.refresh_displays()
         self.reload_table()
@@ -730,17 +1178,249 @@ class MainWindow(QMainWindow):
 
         self.timer.start(1000)
 
+        QTimer.singleShot(250, self.maybe_autostart)
+
     def on_exclude_primary_changed(self):
         self.config["excludePrimaryDisplay"] = bool(self.exclude_primary.isChecked())
         self.schedule_save()
         self.refresh_displays()
         self.reload_table()
 
+    def on_auto_start_changed(self, *_args):
+        self.config["autoStartReceiver"] = bool(self.auto_start_receiver_chk.isChecked())
+        self.config["autoStartSender"] = bool(self.auto_start_sender_chk.isChecked())
+        self.schedule_save()
+
+    def open_routing_dialog(self):
+        dlg = RoutingDialog(self)
+        dlg.exec()
+        self.config = core.load_config()
+        self.refresh_displays()
+        self.reload_table()
+        self.reload_sender_section()
+
+    def refresh_routes_status(self):
+        self.routes_status_list.clear()
+        routes = self.config.get("routes") or []
+        if not routes:
+            item = QListWidgetItem("Aucune route")
+            item.setForeground(QColor("#94a3b8"))
+            self.routes_status_list.addItem(item)
+            return
+
+        status = core.route_manager.status()
+        for r in routes:
+            if not isinstance(r, dict):
+                continue
+            rid = str(r.get("id") or "")
+            name = str(r.get("name") or rid)
+            addr = str(r.get("multicastAddr") or "239.10.10.10").strip()
+            try:
+                port = int(r.get("multicastPort") or 0)
+            except Exception:
+                port = 0
+            out = f"udp://@{addr}:{port}" if addr and port else ""
+            running = bool(status.get(rid, False))
+            prefix = "▶" if running else "⏹"
+            label = f"{prefix} {name}"
+            if out:
+                label += f" — {out}"
+            item = QListWidgetItem(label)
+            item.setForeground(QColor("#50fa7b") if running else QColor("#94a3b8"))
+            self.routes_status_list.addItem(item)
+
+    def _route_by_id(self, route_id: str) -> dict | None:
+        rid = str(route_id or "").strip()
+        if not rid:
+            return None
+        for r in (self.config.get("routes") or []):
+            if isinstance(r, dict) and str(r.get("id") or "") == rid:
+                return r
+        return None
+
+    def _ensure_route_running(self, route_id: str) -> core.RouteLaunchResult:
+        rid = str(route_id or "").strip()
+        route = self._route_by_id(rid)
+        if not route:
+            return core.RouteLaunchResult(ok=False, reason="Route introuvable")
+        if core.route_manager.status().get(rid, False):
+            return core.RouteLaunchResult(ok=True)
+        return core.route_manager.start_route(route)
+
+    def _stream_for_player(self, stream: dict) -> tuple[dict, str | None]:
+        source = str(stream.get("source") or "srt").strip().lower()
+        if source != "route":
+            return (dict(stream), None)
+
+        rid = str(stream.get("sourceRouteId") or "").strip()
+        if not rid:
+            return ({}, "Sélectionne une route pour ce flux.")
+        route = self._route_by_id(rid)
+        if not route:
+            return ({}, "La route sélectionnée n'existe plus.")
+
+        stream_for_player = dict(stream)
+        stream_for_player["source"] = "udp"
+        stream_for_player["udpAddr"] = str(route.get("multicastAddr") or "").strip()
+        stream_for_player["udpPort"] = int(route.get("multicastPort") or 0)
+        return (stream_for_player, None)
+
+    def _set_card_starting(self, row: int):
+        if row < 0 or row >= len(self.stream_cards):
+            return
+        card_info = self.stream_cards[row]
+        card_info["status_dot"].setObjectName("StatusDotStarting")
+        card_info["status_label"].setText("démarrage")
+        card_info["status_label"].setStyleSheet("color: #f59e0b; font-weight: 600;")
+        card_info["start_btn"].setEnabled(False)
+        card_info["status_dot"].style().unpolish(card_info["status_dot"])
+        card_info["status_dot"].style().polish(card_info["status_dot"])
+        card_info["card"].style().unpolish(card_info["card"])
+        card_info["card"].style().polish(card_info["card"])
+
+    def maybe_autostart(self):
+        self.config = core.normalize_config(self.config)
+
+        auto_rx = bool(self.config.get("autoStartReceiver"))
+        auto_tx = bool(self.config.get("autoStartSender"))
+        if not (auto_rx or auto_tx):
+            return
+
+        actions = []
+        if auto_rx:
+            actions.append("Réception")
+        if auto_tx:
+            actions.append("Émission")
+
+        def _do_start():
+            if auto_rx:
+                self.start_all()
+            if auto_tx:
+                if not core.sender_manager.status():
+                    self.toggle_sender()
+
+        QTimer.singleShot(0, _do_start)
+
+        def _show_waiting_dialog_if_needed():
+            running_players = any(core.player_manager.status().values())
+            running_sender = bool(core.sender_manager.status())
+            if running_players or running_sender:
+                return
+
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Démarrage automatique")
+            dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+            dlg.setModal(False)
+
+            dlg_layout = QVBoxLayout(dlg)
+            dlg_layout.setContentsMargins(18, 16, 18, 16)
+            dlg_layout.setSpacing(12)
+
+            label = QLabel(
+                "Auto-start activé, mais aucun flux n'est actif pour l'instant.\n\n"
+                "Actions configurées : "
+                + ", ".join(actions)
+                + "\n\n"
+                "Si tes sources ne sont pas encore disponibles, c'est normal.\n"
+                "L'app démarrera dès qu'elles arrivent."
+            )
+            label.setWordWrap(True)
+            dlg_layout.addWidget(label)
+
+            btn_row = QHBoxLayout()
+            btn_row.addStretch(1)
+            close_btn = QPushButton("Fermer")
+            btn_row.addWidget(close_btn)
+            dlg_layout.addLayout(btn_row)
+            close_btn.clicked.connect(dlg.close)
+
+            dlg.resize(480, 190)
+            dlg.show()
+
+            poll = QTimer(dlg)
+            poll.setInterval(750)
+
+            def _poll():
+                if any(core.player_manager.status().values()) or core.sender_manager.status():
+                    dlg.close()
+
+            poll.timeout.connect(_poll)
+            poll.start()
+
+        QTimer.singleShot(900, _show_waiting_dialog_if_needed)
+
+    def reset_configuration(self):
+        reply = QMessageBox.question(
+            self,
+            "Réinitialisation",
+            "Réinitialiser toute la configuration ?\n\n"
+            "Cela supprimera :\n"
+            "- les flux\n"
+            "- le mapping flux → écrans\n"
+            "- les noms d'écrans personnalisés\n"
+            "- les routes de routage\n"
+            "- les paramètres d'émission\n\n"
+            "Les lectures/émissions en cours seront arrêtées.",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self.stop_all()
+
+        self.pending_stream_starts.clear()
+
+        self.config = {
+            "streams": [],
+            "mapping": {},
+            "displayNames": {},
+            "routes": [],
+            "excludePrimaryDisplay": True,
+            "autoStartReceiver": False,
+            "autoStartSender": False,
+            "sender": {
+                "displayId": "",
+                "host": "127.0.0.1",
+                "port": 10000,
+                "latency": 120,
+                "fps": 30,
+                "bitrateK": 4000,
+                "includeSystemAudio": False,
+            },
+        }
+        self.config = core.normalize_config(self.config)
+
+        core.sender_manager.last_error = None
+
+        self.exclude_primary.blockSignals(True)
+        try:
+            self.exclude_primary.setChecked(True)
+        finally:
+            self.exclude_primary.blockSignals(False)
+
+        self.auto_start_receiver_chk.blockSignals(True)
+        self.auto_start_sender_chk.blockSignals(True)
+        try:
+            self.auto_start_receiver_chk.setChecked(False)
+            self.auto_start_sender_chk.setChecked(False)
+        finally:
+            self.auto_start_receiver_chk.blockSignals(False)
+            self.auto_start_sender_chk.blockSignals(False)
+
+        core.save_config(self.config)
+
+        self.refresh_displays()
+        self.reload_table()
+        self.reload_sender_section()
+        self.refresh_routes_status()
+
     def refresh_displays(self):
         exclude = bool(self.config.get("excludePrimaryDisplay", True))
-        self.displays = core.get_displays(exclude_primary=exclude)
-        self.sender_displays = core.get_displays(exclude_primary=False)
+        overrides = self.config.get("displayNames", {})
+        self.displays = core.get_displays(exclude_primary=exclude, name_overrides=overrides)
+        self.sender_displays = core.get_displays(exclude_primary=False, name_overrides=overrides)
         self.render_displays()
+        self.refresh_routes_status()
         self.reload_sender_section()
         self.update_header_chips()
 
@@ -821,10 +1501,16 @@ class MainWindow(QMainWindow):
         if running:
             self.sender_status_label.setText("▶ en cours")
             self.sender_status_label.setStyleSheet("color: #50fa7b;")
+            self.sender_status_label.setToolTip("")
             self.sender_chip.setText("📡 Émission: ▶")
             self.sender_chip.setObjectName("SenderChipRunning")
         else:
-            self.sender_status_label.setText("⏹ arrêté")
+            if getattr(core.sender_manager, "last_error", None):
+                self.sender_status_label.setText("⏹ erreur")
+                self.sender_status_label.setToolTip(str(core.sender_manager.last_error))
+            else:
+                self.sender_status_label.setText("⏹ arrêté")
+                self.sender_status_label.setToolTip("")
             self.sender_status_label.setStyleSheet("color: #ff5555;")
             self.sender_chip.setText("📡 Émission: ⏹")
             self.sender_chip.setObjectName("SenderChipStopped")
@@ -905,6 +1591,12 @@ class MainWindow(QMainWindow):
         status_label.setAlignment(Qt.AlignCenter)
         top_row.addWidget(status_label)
 
+        start_btn = QPushButton("▶")
+        start_btn.setFixedSize(30, 24)
+        start_btn.setToolTip("Démarrer/arrêter ce flux")
+        start_btn.clicked.connect(lambda checked=False, r=row: self.toggle_stream(r))
+        top_row.addWidget(start_btn)
+
         delete_btn = QPushButton("✕")
         delete_btn.setObjectName("CardDeleteBtn")
         delete_btn.setFixedSize(24, 24)
@@ -913,6 +1605,46 @@ class MainWindow(QMainWindow):
         top_row.addWidget(delete_btn)
 
         card_layout.addLayout(top_row)
+
+        source_row = QHBoxLayout()
+        source_row.setSpacing(10)
+
+        source_lbl = QLabel("Source")
+        source_lbl.setObjectName("FormLabel")
+        source_lbl.setFixedWidth(38)
+        source_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        source_row.addWidget(source_lbl)
+
+        source_combo = QComboBox()
+        source_combo.addItem("SRT", "srt")
+        source_combo.addItem("Route", "route")
+        source_combo.setFixedHeight(28)
+        current_source = str(stream.get("source") or "srt").strip().lower()
+        is_route_source = current_source == "route"
+        idx = source_combo.findData(current_source)
+        if idx >= 0:
+            source_combo.setCurrentIndex(idx)
+        source_combo.currentIndexChanged.connect(lambda _v, r=row: self._on_source_changed(r))
+        source_row.addWidget(source_combo)
+
+        route_combo = QComboBox()
+        route_combo.addItem("— Sélectionner —", "")
+        for r in (self.config.get("routes") or []):
+            if isinstance(r, dict):
+                rid = str(r.get("id") or "")
+                rname = str(r.get("name") or rid)
+                if rid:
+                    route_combo.addItem(rname, rid)
+        route_combo.setFixedHeight(28)
+        current_route_id = str(stream.get("sourceRouteId") or "")
+        ridx = route_combo.findData(current_route_id)
+        if ridx >= 0:
+            route_combo.setCurrentIndex(ridx)
+        route_combo.setEnabled(str(source_combo.currentData() or "srt") == "route")
+        route_combo.currentIndexChanged.connect(lambda _v, r=row: self._on_card_changed(r))
+        source_row.addWidget(route_combo, stretch=1)
+
+        card_layout.addLayout(source_row)
 
         # ── Row 2: port + latency + screen ──
         bottom_row = QHBoxLayout()
@@ -930,6 +1662,7 @@ class MainWindow(QMainWindow):
         port_spin.setButtonSymbols(QSpinBox.NoButtons)
         port_spin.setFixedHeight(28)
         port_spin.setFixedWidth(70)
+        port_spin.setEnabled(not is_route_source)
         port_spin.valueChanged.connect(lambda v, r=row: self._on_card_changed(r))
         bottom_row.addWidget(port_spin)
 
@@ -946,6 +1679,7 @@ class MainWindow(QMainWindow):
         latency_spin.setButtonSymbols(QSpinBox.NoButtons)
         latency_spin.setFixedHeight(28)
         latency_spin.setFixedWidth(80)
+        latency_spin.setEnabled(not is_route_source)
         latency_spin.valueChanged.connect(lambda v, r=row: self._on_card_changed(r))
         bottom_row.addWidget(latency_spin)
 
@@ -954,6 +1688,46 @@ class MainWindow(QMainWindow):
         mute_chk.setToolTip("Couper l'audio de ce flux")
         mute_chk.stateChanged.connect(lambda _v, r=row: self._on_card_changed(r))
         bottom_row.addWidget(mute_chk)
+
+        mode_lbl = QLabel("Mode")
+        mode_lbl.setObjectName("FormLabel")
+        mode_lbl.setFixedWidth(38)
+        mode_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        bottom_row.addWidget(mode_lbl)
+
+        mode_combo = QComboBox()
+        mode_combo.addItem("Fit", "fit")
+        mode_combo.addItem("Fill", "fill")
+        mode_combo.addItem("Stretch", "stretch")
+        mode_combo.setFixedHeight(28)
+        current_mode = str(stream.get("displayMode") or "fit").strip().lower()
+        idx = mode_combo.findData(current_mode)
+        if idx >= 0:
+            mode_combo.setCurrentIndex(idx)
+        mode_combo.currentIndexChanged.connect(lambda _v, r=row: self._on_card_changed(r))
+        bottom_row.addWidget(mode_combo)
+
+        rot_lbl = QLabel("Rot")
+        rot_lbl.setObjectName("FormLabel")
+        rot_lbl.setFixedWidth(26)
+        rot_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        bottom_row.addWidget(rot_lbl)
+
+        rot_combo = QComboBox()
+        rot_combo.addItem("0°", 0)
+        rot_combo.addItem("90°", 90)
+        rot_combo.addItem("180°", 180)
+        rot_combo.addItem("270°", 270)
+        rot_combo.setFixedHeight(28)
+        try:
+            current_rot = int(stream.get("rotate") or 0)
+        except Exception:
+            current_rot = 0
+        ridx = rot_combo.findData(current_rot)
+        if ridx >= 0:
+            rot_combo.setCurrentIndex(ridx)
+        rot_combo.currentIndexChanged.connect(lambda _v, r=row: self._on_card_changed(r))
+        bottom_row.addWidget(rot_combo)
 
         screen_lbl = QLabel("Écran")
         screen_lbl.setObjectName("FormLabel")
@@ -986,11 +1760,75 @@ class MainWindow(QMainWindow):
             "port_spin": port_spin,
             "latency_spin": latency_spin,
             "mute_chk": mute_chk,
+            "mode_combo": mode_combo,
+            "rot_combo": rot_combo,
+            "source_combo": source_combo,
+            "route_combo": route_combo,
             "display_combo": display_combo,
             "status_dot": status_dot,
             "status_label": status_label,
+            "start_btn": start_btn,
             "stream_id": stream_id,
         }
+
+    def toggle_stream(self, row: int):
+        self.config = core.normalize_config(self.config)
+        streams = self.config.get("streams", [])
+        if row < 0 or row >= len(streams):
+            return
+        if row >= len(self.stream_cards):
+            return
+
+        self._update_config_from_card(row)
+        self.config = core.normalize_config(self.config)
+        core.save_config(self.config)
+
+        stream = self.config.get("streams", [])[row]
+        stream_id = str(stream.get("id"))
+        running = bool(core.player_manager.status().get(stream_id, False))
+
+        if running:
+            self.pending_stream_starts.pop(stream_id, None)
+            core.player_manager.stop_player(stream_id)
+            self.refresh_status()
+            return
+
+        display_id = str((self.config.get("mapping", {}) or {}).get(stream_id) or "")
+        if not display_id:
+            QMessageBox.warning(self, "Démarrage flux", "Assigne un écran à ce flux avant de le démarrer.")
+            return
+
+        display = next((d for d in self.displays if str(d.get("id")) == display_id), None)
+        if not display:
+            QMessageBox.warning(self, "Démarrage flux", "L'écran assigné n'est plus disponible.")
+            return
+
+        source = str(stream.get("source") or "srt").strip().lower()
+        startup_seconds = 0.8
+        if source == "route":
+            startup_seconds = 3.5
+            rid = str(stream.get("sourceRouteId") or "").strip()
+            result = self._ensure_route_running(rid)
+            if not result.ok:
+                QMessageBox.warning(self, "Démarrage flux", "Impossible de démarrer la route.\n\n" + (result.reason or "Erreur inconnue."))
+                return
+
+        stream_for_player, err = self._stream_for_player(stream)
+        if err:
+            QMessageBox.warning(self, "Démarrage flux", err)
+            return
+
+        if str(stream_for_player.get("source") or "").strip().lower() == "udp":
+            startup_seconds = max(startup_seconds, 3.5)
+
+        self.pending_stream_starts[stream_id] = time.monotonic() + float(startup_seconds)
+        self._set_card_starting(row)
+
+        result = core.player_manager.start_player(stream_for_player, display)
+        if not result.ok:
+            self.pending_stream_starts.pop(stream_id, None)
+            QMessageBox.warning(self, "Démarrage flux", "Impossible de démarrer le flux.\n\n" + (result.reason or "Erreur inconnue."))
+        self.refresh_status()
 
     def reload_table(self):
         self.config = core.normalize_config(self.config)
@@ -1022,6 +1860,18 @@ class MainWindow(QMainWindow):
     def _on_card_changed(self, row: int):
         self._update_config_from_card(row)
         self.schedule_save()
+
+    def _on_source_changed(self, row: int):
+        if row < 0 or row >= len(self.stream_cards):
+            return
+        card = self.stream_cards[row]
+        source = str(card["source_combo"].currentData() or "srt")
+        card["route_combo"].setEnabled(source == "route")
+        card["port_spin"].setEnabled(source != "route")
+        card["latency_spin"].setEnabled(source != "route")
+        if source != "route":
+            card["route_combo"].setCurrentIndex(0)
+        self._on_card_changed(row)
 
     def _delete_stream(self, row: int):
         streams = self.config.get("streams", [])
@@ -1060,6 +1910,15 @@ class MainWindow(QMainWindow):
         stream["port"] = int(card["port_spin"].value())
         stream["latency"] = int(card["latency_spin"].value())
         stream["muteAudio"] = bool(card["mute_chk"].isChecked())
+        stream["displayMode"] = str(card["mode_combo"].currentData() or "fit")
+        stream["rotate"] = int(card["rot_combo"].currentData() or 0)
+
+        source = str(card["source_combo"].currentData() or "srt")
+        stream["source"] = source
+        if source == "route":
+            stream["sourceRouteId"] = str(card["route_combo"].currentData() or "")
+        else:
+            stream["sourceRouteId"] = ""
 
         display_id = card["display_combo"].currentData() or ""
         mapping = self.config.setdefault("mapping", {})
@@ -1077,7 +1936,7 @@ class MainWindow(QMainWindow):
 
     def check_duplicate_ports(self) -> list[int]:
         streams = self.config.get("streams", [])
-        ports = [s.get("port") for s in streams]
+        ports = [s.get("port") for s in streams if str(s.get("source") or "srt").strip().lower() == "srt"]
         seen = set()
         duplicates = set()
         for p in ports:
@@ -1089,6 +1948,18 @@ class MainWindow(QMainWindow):
     def start_all(self):
         self.save()
 
+        streams = self.config.get("streams", [])
+        needs_udp_startup = any(
+            isinstance(s, dict) and str(s.get("source") or "srt").strip().lower() == "route" for s in (streams or [])
+        )
+        startup_seconds = 3.5 if needs_udp_startup else 1.0
+        self.global_start_until = time.monotonic() + float(startup_seconds)
+        self.btn_toggle.setText("…  Démarrage")
+        self.btn_toggle.setObjectName("PrimaryButton")
+        self.btn_toggle.setEnabled(False)
+        self.btn_toggle.style().unpolish(self.btn_toggle)
+        self.btn_toggle.style().polish(self.btn_toggle)
+
         duplicate_ports = self.check_duplicate_ports()
         if duplicate_ports:
             QMessageBox.warning(
@@ -1099,8 +1970,34 @@ class MainWindow(QMainWindow):
                 + "\n\nCela peut causer des conflits.",
             )
 
+        routes_needed: set[str] = set()
+        for s in (self.config.get("streams") or []):
+            if not isinstance(s, dict):
+                continue
+            if str(s.get("source") or "srt").strip().lower() != "route":
+                continue
+            rid = str(s.get("sourceRouteId") or "").strip()
+            if rid:
+                routes_needed.add(rid)
+
+        if routes_needed:
+            routes_by_id = {str(r.get("id")): r for r in (self.config.get("routes") or []) if isinstance(r, dict)}
+            running_routes = core.route_manager.status()
+            for rid in sorted(routes_needed):
+                if running_routes.get(rid, False):
+                    continue
+                route = routes_by_id.get(rid)
+                if not route:
+                    continue
+                self._ensure_route_running(rid)
+
         results = core.apply_mapping(self.config)
-        failures = [sid for sid, ok in results.items() if not ok]
+        stream_name_by_id = {str(s.get("id")): str(s.get("name") or s.get("id")) for s in self.config.get("streams", [])}
+        failures = [
+            f"{stream_name_by_id.get(str(sid), str(sid))} — {(res.reason or 'Erreur inconnue.') }"
+            for sid, res in results.items()
+            if not res.ok
+        ]
         self.refresh_status()
 
         if failures:
@@ -1110,11 +2007,14 @@ class MainWindow(QMainWindow):
                 "Certains flux n'ont pas démarré (pas d'écran assigné, ou ffplay manquant).\n\n"
                 + "\n".join(failures),
             )
-        self.update_toggle_button(True)
+        status = core.player_manager.status()
+        self.update_toggle_button(any(status.values()))
 
     def stop_all(self):
+        self.global_start_until = None
         core.player_manager.stop_all()
         core.sender_manager.stop()
+        core.route_manager.stop_all()
         self.refresh_status()
         self.refresh_sender_status()
         self.update_toggle_button(False)
@@ -1140,6 +2040,8 @@ class MainWindow(QMainWindow):
         status = core.player_manager.status()
         streams = self.config.get("streams", [])
 
+        now = time.monotonic()
+
         for row, stream in enumerate(streams):
             if row >= len(self.stream_cards):
                 break
@@ -1147,25 +2049,59 @@ class MainWindow(QMainWindow):
             running = status.get(stream_id, False)
             card_info = self.stream_cards[row]
 
-            if running:
+            pending_until = self.pending_stream_starts.get(stream_id)
+            is_starting = bool(pending_until and now < float(pending_until))
+            if pending_until and not is_starting:
+                self.pending_stream_starts.pop(stream_id, None)
+
+            if is_starting:
+                card_info["status_dot"].setObjectName("StatusDotStarting")
+                card_info["status_label"].setText("démarrage")
+                card_info["status_label"].setStyleSheet("color: #f59e0b; font-weight: 600;")
+                card_info["card"].setObjectName("StreamCard")
+                card_info["start_btn"].setText("…")
+                card_info["start_btn"].setObjectName("PrimaryButton")
+                card_info["start_btn"].setEnabled(False)
+            elif running:
                 card_info["status_dot"].setObjectName("StatusDotRunning")
                 card_info["status_label"].setText("en cours")
                 card_info["status_label"].setStyleSheet("color: #50fa7b; font-weight: 600;")
                 card_info["card"].setObjectName("StreamCardRunning")
+                card_info["start_btn"].setText("⏹")
+                card_info["start_btn"].setObjectName("DangerButton")
+                card_info["start_btn"].setEnabled(True)
             else:
                 card_info["status_dot"].setObjectName("StatusDotStopped")
                 card_info["status_label"].setText("arrêté")
                 card_info["status_label"].setStyleSheet("color: #64748b;")
                 card_info["card"].setObjectName("StreamCard")
+                card_info["start_btn"].setText("▶")
+                card_info["start_btn"].setObjectName("SuccessButton")
+                card_info["start_btn"].setEnabled(True)
 
             card_info["status_dot"].style().unpolish(card_info["status_dot"])
             card_info["status_dot"].style().polish(card_info["status_dot"])
             card_info["card"].style().unpolish(card_info["card"])
             card_info["card"].style().polish(card_info["card"])
+            card_info["start_btn"].style().unpolish(card_info["start_btn"])
+            card_info["start_btn"].style().polish(card_info["start_btn"])
 
         self.update_header_chips(status)
-        self.update_toggle_button(any(status.values()))
+        any_running = any(status.values())
+        if any_running:
+            self.global_start_until = None
+        if self.global_start_until is not None and not any_running and now < float(self.global_start_until):
+            self.btn_toggle.setText("…  Démarrage")
+            self.btn_toggle.setObjectName("PrimaryButton")
+            self.btn_toggle.setEnabled(False)
+            self.btn_toggle.style().unpolish(self.btn_toggle)
+            self.btn_toggle.style().polish(self.btn_toggle)
+        else:
+            if self.global_start_until is not None and not any_running:
+                self.global_start_until = None
+            self.update_toggle_button(any_running)
         self.refresh_sender_status()
+        self.refresh_routes_status()
 
     def add_stream(self):
         now = int(time.time() * 1000)
@@ -1193,7 +2129,90 @@ class MainWindow(QMainWindow):
             color = QColor("#60a5fa") if display.get("isPrimary") else QColor("#e2e8f0")
             item.setForeground(color)
             item.setToolTip(f"ID: {display['id']} | Position: {display['x']}, {display['y']}")
+            item.setData(Qt.UserRole, str(display["id"]))
             self.displays_list.addItem(item)
+
+    def auto_map_streams(self):
+        self.config = core.normalize_config(self.config)
+        streams = self.config.get("streams", [])
+
+        displays = list(self.displays)
+        if not displays:
+            QMessageBox.warning(self, "Auto-mapping", "Aucun écran disponible pour mapper les flux.")
+            return
+
+        target_count = len(displays)
+        if len(streams) < target_count:
+            used_ports = {int(s.get("port") or 0) for s in streams if isinstance(s, dict)}
+
+            def _next_free_port(start: int = 9001) -> int:
+                p = int(start)
+                while p in used_ports or p <= 0:
+                    p += 1
+                used_ports.add(p)
+                return p
+
+            start_index = len(streams)
+            for i in range(start_index, target_count):
+                now = int(time.time() * 1000)
+                stream_id = f"stream-{now}-{i + 1}"
+                port = _next_free_port(9000 + i + 1)
+                streams.append({"id": stream_id, "name": f"Flux {i + 1}", "port": port, "latency": 120})
+
+            self.config["streams"] = streams
+            self.config = core.normalize_config(self.config)
+
+        display_ids = [str(d.get("id")) for d in displays]
+        mapping = self.config.setdefault("mapping", {})
+        used: set[str] = set(str(v) for v in mapping.values() if v)
+
+        next_index = 0
+        for stream in streams:
+            stream_id = str(stream.get("id"))
+            current = mapping.get(stream_id)
+            if current and str(current) in display_ids:
+                continue
+
+            while next_index < len(display_ids) and display_ids[next_index] in used:
+                next_index += 1
+            if next_index >= len(display_ids):
+                mapping.pop(stream_id, None)
+                continue
+
+            mapping[stream_id] = display_ids[next_index]
+            used.add(display_ids[next_index])
+            next_index += 1
+
+        self.reload_table()
+        self.schedule_save()
+
+    def rename_selected_display(self):
+        item = self.displays_list.currentItem()
+        if not item:
+            return
+        display_id = item.data(Qt.UserRole)
+        if not display_id:
+            return
+
+        current_name = ""
+        for d in self.displays:
+            if str(d.get("id")) == str(display_id):
+                current_name = str(d.get("name") or "")
+                break
+
+        new_name, ok = QInputDialog.getText(self, "Renommer écran", "Nom de l'écran :", text=current_name)
+        if not ok:
+            return
+        new_name = (new_name or "").strip()
+        if not new_name:
+            QMessageBox.warning(self, "Renommer écran", "Le nom ne peut pas être vide.")
+            return
+
+        names = self.config.setdefault("displayNames", {})
+        names[str(display_id)] = str(new_name)
+        self.schedule_save()
+        self.refresh_displays()
+        self.reload_table()
 
     def update_header_chips(self, status: dict | None = None):
         stream_count = len(self.config.get("streams", []))
@@ -1229,6 +2248,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         core.player_manager.stop_all()
         core.sender_manager.stop()
+        core.route_manager.stop_all()
         event.accept()
 
 

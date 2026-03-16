@@ -9,6 +9,22 @@ from screeninfo import get_monitors
 from .paths import CONFIG_PATH, FFMPEG_PATH, FFPLAY_PATH
 
 
+def _win_creationflags() -> int:
+    if sys.platform != "win32":
+        return 0
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _terminate_proc(proc: subprocess.Popen | None) -> None:
+    if not proc or proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
 def load_config() -> dict:
     if not CONFIG_PATH.exists():
         config = {
@@ -43,7 +59,61 @@ def normalize_config(config: dict) -> dict:
 
     config.setdefault("streams", [])
     config.setdefault("mapping", {})
+    config.setdefault("displayNames", {})
+    config.setdefault("routes", [])
     config["excludePrimaryDisplay"] = bool(config.get("excludePrimaryDisplay", True))
+    config["autoStartReceiver"] = bool(config.get("autoStartReceiver", False))
+    config["autoStartSender"] = bool(config.get("autoStartSender", False))
+
+    display_names = config.get("displayNames") or {}
+    if isinstance(display_names, dict):
+        config["displayNames"] = {str(k): str(v) for k, v in display_names.items() if v is not None}
+    else:
+        config["displayNames"] = {}
+
+    routes = config.get("routes") or []
+    normalized_routes = []
+    if isinstance(routes, list):
+        for i, r in enumerate(routes):
+            if not isinstance(r, dict):
+                continue
+            route = dict(r)
+            route.setdefault("id", f"route-{i + 1}")
+            route.setdefault("name", route["id"])
+            route.setdefault("inputPort", 9001)
+            route.setdefault("inputLatency", 120)
+            route.setdefault("multicastAddr", "239.10.10.10")
+            route.setdefault("multicastPort", 1234)
+            route.setdefault("pktSize", 1316)
+            route.setdefault("ttl", 1)
+
+            route["id"] = str(route.get("id") or f"route-{i + 1}")
+            route["name"] = str(route.get("name") or route["id"])
+            try:
+                route["inputPort"] = int(route.get("inputPort") or 9001)
+            except (TypeError, ValueError):
+                route["inputPort"] = 9001
+            try:
+                route["inputLatency"] = int(route.get("inputLatency") or 120)
+            except (TypeError, ValueError):
+                route["inputLatency"] = 120
+            route["multicastAddr"] = str(route.get("multicastAddr") or "239.10.10.10").strip()
+            try:
+                route["multicastPort"] = int(route.get("multicastPort") or 1234)
+            except (TypeError, ValueError):
+                route["multicastPort"] = 1234
+            try:
+                route["pktSize"] = int(route.get("pktSize") or 1316)
+            except (TypeError, ValueError):
+                route["pktSize"] = 1316
+            try:
+                route["ttl"] = int(route.get("ttl") or 1)
+            except (TypeError, ValueError):
+                route["ttl"] = 1
+
+            normalized_routes.append(route)
+
+    config["routes"] = normalized_routes
 
     sender = dict(config.get("sender") or {})
     sender.setdefault("displayId", "")
@@ -88,6 +158,44 @@ def normalize_config(config: dict) -> dict:
         stream.setdefault("port", 9000 + i + 1)
         stream.setdefault("latency", 120)
         stream.setdefault("muteAudio", False)
+        stream.setdefault("displayMode", "fit")
+        stream.setdefault("rotate", 0)
+        stream.setdefault("source", "srt")
+        stream.setdefault("sourceRouteId", "")
+        stream.setdefault("udpAddr", "")
+        stream.setdefault("udpPort", 0)
+        stream["id"] = str(stream.get("id") or f"stream-{i + 1}")
+        stream["name"] = str(stream.get("name") or stream["id"])
+        try:
+            stream["port"] = int(stream.get("port") or (9000 + i + 1))
+        except (TypeError, ValueError):
+            stream["port"] = 9000 + i + 1
+        try:
+            stream["latency"] = int(stream.get("latency") or 120)
+        except (TypeError, ValueError):
+            stream["latency"] = 120
+        stream["muteAudio"] = bool(stream.get("muteAudio", False))
+        mode = str(stream.get("displayMode") or "fit").strip().lower()
+        if mode not in {"fit", "fill", "stretch"}:
+            mode = "fit"
+        stream["displayMode"] = mode
+        try:
+            rotate = int(stream.get("rotate") or 0)
+        except (TypeError, ValueError):
+            rotate = 0
+        if rotate not in {0, 90, 180, 270}:
+            rotate = 0
+        stream["rotate"] = rotate
+        source = str(stream.get("source") or "srt").strip().lower()
+        if source not in {"srt", "route", "udp"}:
+            source = "srt"
+        stream["source"] = source
+        stream["sourceRouteId"] = str(stream.get("sourceRouteId") or "")
+        stream["udpAddr"] = str(stream.get("udpAddr") or "").strip()
+        try:
+            stream["udpPort"] = int(stream.get("udpPort") or 0)
+        except (TypeError, ValueError):
+            stream["udpPort"] = 0
         normalized_streams.append(stream)
 
     config["streams"] = normalized_streams
@@ -100,25 +208,51 @@ def save_config(config: dict) -> None:
         json.dump(config, f, indent=2, ensure_ascii=False)
 
 
-def get_displays(exclude_primary: bool = False) -> list[dict]:
+def get_displays(exclude_primary: bool = False, *, name_overrides: dict[str, str] | None = None) -> list[dict]:
     monitors = get_monitors()
     displays = []
+    overrides = name_overrides or {}
+
+    pending: list[tuple[str, int, object]] = []
     for i, m in enumerate(monitors):
         is_primary = bool(getattr(m, "is_primary", False))
         if exclude_primary and is_primary:
             continue
 
         name = getattr(m, "name", None)
+        name_str = str(name).strip() if name is not None else ""
+        base_id = name_str if name_str else f"geom-{m.x}-{m.y}-{m.width}x{m.height}"
+        pending.append((base_id, i, m))
+
+    counts: dict[str, int] = {}
+    for base_id, _i, _m in pending:
+        counts[base_id] = counts.get(base_id, 0) + 1
+
+    occurrence: dict[str, int] = {}
+    for base_id, i, m in pending:
+        if counts.get(base_id, 0) > 1:
+            idx = occurrence.get(base_id, 0) + 1
+            occurrence[base_id] = idx
+            display_id = f"{base_id}-{idx}"
+        else:
+            display_id = base_id
+
+        display_name = base_id if not base_id.startswith("geom-") else f"Écran {i + 1}"
+        if str(display_id) in overrides and overrides[str(display_id)]:
+            display_name = str(overrides[str(display_id)])
+        elif str(base_id) in overrides and overrides[str(base_id)]:
+            display_name = str(overrides[str(base_id)])
+
         displays.append(
             {
-                "id": str(name) if name is not None else f"monitor-{i}",
+                "id": display_id,
                 "index": i,
-                "name": str(name) if name else f"Écran {i + 1}",
+                "name": display_name,
                 "width": m.width,
                 "height": m.height,
                 "x": m.x,
                 "y": m.y,
-                "isPrimary": is_primary,
+                "isPrimary": bool(getattr(m, "is_primary", False)),
             }
         )
     return displays
@@ -137,17 +271,63 @@ class PlayerManager:
 
     def stop_player(self, stream_id: str) -> None:
         proc = self.players.get(stream_id)
-        if proc and proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+        _terminate_proc(proc)
         self.players.pop(stream_id, None)
 
     def stop_all(self) -> None:
         for stream_id in list(self.players.keys()):
             self.stop_player(stream_id)
+
+    def _input_url(self, stream: dict) -> tuple[str, str | None]:
+        source = str(stream.get("source") or "srt").strip().lower()
+        if source not in {"srt", "udp"}:
+            source = "srt"
+
+        if source == "udp":
+            addr = str(stream.get("udpAddr") or "").strip()
+            udp_port = int(stream.get("udpPort") or 0)
+            if not addr or udp_port <= 0:
+                return ("", "Source UDP invalide")
+            return (f"udp://@{addr}:{udp_port}", None)
+
+        latency_ms = int(stream.get("latency", 120))
+        port = int(stream.get("port"))
+        return (f"srt://0.0.0.0:{port}?mode=listener&latency={latency_ms * 1000}", None)
+
+    def _vf(self, stream: dict, display: dict) -> str:
+        display_w = int(display["width"])
+        display_h = int(display["height"])
+        mode = str(stream.get("displayMode") or "fit").strip().lower()
+        if mode not in {"fit", "fill", "stretch"}:
+            mode = "fit"
+
+        try:
+            rotate = int(stream.get("rotate") or 0)
+        except Exception:
+            rotate = 0
+        if rotate not in {0, 90, 180, 270}:
+            rotate = 0
+
+        if mode == "stretch":
+            vf = f"scale={display_w}:{display_h}"
+        elif mode == "fill":
+            vf = (
+                f"scale={display_w}:{display_h}:force_original_aspect_ratio=increase,"
+                f"crop={display_w}:{display_h}"
+            )
+        else:
+            vf = (
+                f"scale={display_w}:{display_h}:force_original_aspect_ratio=decrease,"
+                f"pad={display_w}:{display_h}:(ow-iw)/2:(oh-ih)/2"
+            )
+
+        if rotate == 90:
+            return f"transpose=1,{vf}"
+        if rotate == 270:
+            return f"transpose=2,{vf}"
+        if rotate == 180:
+            return f"transpose=1,transpose=1,{vf}"
+        return vf
 
     def start_player(self, stream: dict, display: dict) -> PlayerLaunchResult:
         if not self.ffplay_path.exists():
@@ -156,9 +336,15 @@ class PlayerManager:
         stream_id = str(stream.get("id"))
         self.stop_player(stream_id)
 
-        latency_ms = int(stream.get("latency", 120))
-        port = int(stream.get("port"))
-        srt_url = f"srt://0.0.0.0:{port}?mode=listener&latency={latency_ms * 1000}"
+        input_url, input_err = self._input_url(stream)
+        if input_err:
+            return PlayerLaunchResult(ok=False, reason=input_err)
+
+        vf = self._vf(stream, display)
+
+        source = str(stream.get("source") or "srt").strip().lower()
+        if source not in {"srt", "udp"}:
+            source = "srt"
 
         args = [
             str(self.ffplay_path),
@@ -181,20 +367,27 @@ class PlayerManager:
             str(display["width"]),
             "-y",
             str(display["height"]),
+            "-vf",
+            vf,
             "-fs",
         ]
+
+        if source == "udp":
+            args.extend([
+                "-framedrop",
+                "-sync",
+                "ext",
+            ])
 
         if bool(stream.get("muteAudio")):
             args.append("-an")
 
         args.extend([
             "-i",
-            srt_url,
+            input_url,
         ])
 
-        creationflags = 0
-        if sys.platform == "win32":
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        creationflags = _win_creationflags()
 
         try:
             proc = subprocess.Popen(
@@ -209,7 +402,13 @@ class PlayerManager:
             return PlayerLaunchResult(ok=False, reason=str(e))
 
     def status(self) -> dict[str, bool]:
-        return {stream_id: (proc.poll() is None) for stream_id, proc in self.players.items()}
+        status: dict[str, bool] = {}
+        for stream_id, proc in list(self.players.items()):
+            alive = proc.poll() is None
+            status[stream_id] = alive
+            if not alive:
+                self.players.pop(stream_id, None)
+        return status
 
 
 player_manager = PlayerManager(FFPLAY_PATH)
@@ -228,12 +427,7 @@ class SenderManager:
         self.last_error: str | None = None
 
     def stop(self) -> None:
-        if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
-            try:
-                self.proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
+        _terminate_proc(self.proc)
         self.proc = None
 
     def status(self) -> bool:
@@ -258,7 +452,8 @@ class SenderManager:
         include_system_audio: bool = False,
     ) -> SenderLaunchResult:
         if not self.ffmpeg_path.exists():
-            return SenderLaunchResult(ok=False, reason=f"ffmpeg introuvable: {self.ffmpeg_path}")
+            self.last_error = f"ffmpeg introuvable: {self.ffmpeg_path}"
+            return SenderLaunchResult(ok=False, reason=self.last_error)
 
         self.stop()
 
@@ -357,9 +552,7 @@ class SenderManager:
             out_url,
         ])
 
-        creationflags = 0
-        if sys.platform == "win32":
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        creationflags = _win_creationflags()
 
         try:
             self.proc = subprocess.Popen(
@@ -379,12 +572,110 @@ class SenderManager:
 sender_manager = SenderManager(FFMPEG_PATH)
 
 
-def apply_mapping(config: dict) -> dict[str, bool]:
+@dataclass
+class RouteLaunchResult:
+    ok: bool
+    reason: str | None = None
+
+
+class RouteManager:
+    def __init__(self, ffmpeg_path: Path):
+        self.ffmpeg_path = ffmpeg_path
+        self.procs: dict[str, subprocess.Popen] = {}
+        self.last_error: dict[str, str] = {}
+
+    def stop_route(self, route_id: str) -> None:
+        proc = self.procs.get(route_id)
+        _terminate_proc(proc)
+        self.procs.pop(route_id, None)
+
+    def stop_all(self) -> None:
+        for route_id in list(self.procs.keys()):
+            self.stop_route(route_id)
+
+    def status(self) -> dict[str, bool]:
+        status: dict[str, bool] = {}
+        for route_id, proc in list(self.procs.items()):
+            alive = proc.poll() is None
+            status[route_id] = alive
+            if not alive:
+                self.procs.pop(route_id, None)
+        return status
+
+    def start_route(self, route: dict) -> RouteLaunchResult:
+        if not self.ffmpeg_path.exists():
+            return RouteLaunchResult(ok=False, reason=f"ffmpeg introuvable: {self.ffmpeg_path}")
+
+        route_id = str(route.get("id") or "")
+        if not route_id:
+            return RouteLaunchResult(ok=False, reason="Route invalide")
+
+        self.stop_route(route_id)
+
+        in_port = int(route.get("inputPort") or 0)
+        in_latency_ms = int(route.get("inputLatency") or 120)
+        maddr = str(route.get("multicastAddr") or "").strip()
+        mport = int(route.get("multicastPort") or 0)
+        pkt_size = int(route.get("pktSize") or 1316)
+        ttl = int(route.get("ttl") or 1)
+
+        if in_port <= 0 or not maddr or mport <= 0:
+            return RouteLaunchResult(ok=False, reason="Paramètres de route incomplets")
+
+        in_url = f"srt://0.0.0.0:{in_port}?mode=listener&latency={max(0, in_latency_ms) * 1000}"
+        out_url = f"udp://{maddr}:{mport}?pkt_size={pkt_size}&ttl={ttl}"
+
+        args = [
+            str(self.ffmpeg_path),
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-fflags",
+            "nobuffer",
+            "-flags",
+            "low_delay",
+            "-i",
+            in_url,
+            "-c",
+            "copy",
+            "-flush_packets",
+            "1",
+            "-mpegts_flags",
+            "+resend_headers",
+            "-f",
+            "mpegts",
+            out_url,
+        ]
+
+        creationflags = _win_creationflags()
+
+        try:
+            proc = subprocess.Popen(
+                args,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+            self.procs[route_id] = proc
+            self.last_error.pop(route_id, None)
+            return RouteLaunchResult(ok=True)
+        except Exception as e:
+            self.last_error[route_id] = str(e)
+            return RouteLaunchResult(ok=False, reason=str(e))
+
+
+route_manager = RouteManager(FFMPEG_PATH)
+
+
+def apply_mapping(config: dict) -> dict[str, PlayerLaunchResult]:
     config = normalize_config(config)
 
-    results: dict[str, bool] = {}
-    displays = get_displays(exclude_primary=False)
+    results: dict[str, PlayerLaunchResult] = {}
+    displays = get_displays(exclude_primary=False, name_overrides=config.get("displayNames") or {})
     display_map = {str(d["id"]): d for d in displays}
+
+    routes = {str(r.get("id")): r for r in (config.get("routes") or []) if isinstance(r, dict)}
+    route_status = route_manager.status()
 
     for stream in config["streams"]:
         stream_id = str(stream["id"])
@@ -392,10 +683,30 @@ def apply_mapping(config: dict) -> dict[str, bool]:
 
         if not display_id or str(display_id) not in display_map:
             player_manager.stop_player(stream_id)
-            results[stream_id] = False
+            results[stream_id] = PlayerLaunchResult(ok=False, reason="Aucun écran assigné")
             continue
 
         display = display_map[str(display_id)]
-        results[stream_id] = player_manager.start_player(stream, display).ok
+
+        source = str(stream.get("source") or "srt").strip().lower()
+        if source == "route":
+            route_id = str(stream.get("sourceRouteId") or "")
+            route = routes.get(route_id)
+            if not route_id or not route:
+                player_manager.stop_player(stream_id)
+                results[stream_id] = PlayerLaunchResult(ok=False, reason="Route introuvable")
+                continue
+            if not route_status.get(route_id, False):
+                player_manager.stop_player(stream_id)
+                results[stream_id] = PlayerLaunchResult(ok=False, reason=f"Route arrêtée: {route.get('name', route_id)}")
+                continue
+
+            stream_copy = dict(stream)
+            stream_copy["source"] = "udp"
+            stream_copy["udpAddr"] = str(route.get("multicastAddr") or "").strip()
+            stream_copy["udpPort"] = int(route.get("multicastPort") or 0)
+            results[stream_id] = player_manager.start_player(stream_copy, display)
+        else:
+            results[stream_id] = player_manager.start_player(stream, display)
 
     return results

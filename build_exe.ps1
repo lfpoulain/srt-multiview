@@ -21,4 +21,4 @@ if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller a échoué (code=$LASTEXITCODE)."
 }
 
-Write-Host "Build terminé. Voir dist\SRT-MultiView\SRT-MultiView.exe"
+Write-Host "Build terminé. Voir dist\SRT-MultiView.exe"
