@@ -1954,9 +1954,9 @@ class MainWindow(QMainWindow):
         )
         startup_seconds = 3.5 if needs_udp_startup else 1.0
         self.global_start_until = time.monotonic() + float(startup_seconds)
-        self.btn_toggle.setText("…  Démarrage")
-        self.btn_toggle.setObjectName("PrimaryButton")
-        self.btn_toggle.setEnabled(False)
+        self.btn_toggle.setText("⏹  Annuler")
+        self.btn_toggle.setObjectName("DangerButton")
+        self.btn_toggle.setEnabled(True)
         self.btn_toggle.style().unpolish(self.btn_toggle)
         self.btn_toggle.style().polish(self.btn_toggle)
 
@@ -2020,6 +2020,9 @@ class MainWindow(QMainWindow):
         self.update_toggle_button(False)
 
     def toggle_start_stop(self):
+        if self.global_start_until is not None:
+            self.stop_all()
+            return
         if self.is_running:
             self.stop_all()
         else:
@@ -2033,6 +2036,7 @@ class MainWindow(QMainWindow):
         else:
             self.btn_toggle.setText("▶  Démarrer tout")
             self.btn_toggle.setObjectName("SuccessButton")
+        self.btn_toggle.setEnabled(True)
         self.btn_toggle.style().unpolish(self.btn_toggle)
         self.btn_toggle.style().polish(self.btn_toggle)
 
@@ -2091,9 +2095,9 @@ class MainWindow(QMainWindow):
         if any_running:
             self.global_start_until = None
         if self.global_start_until is not None and not any_running and now < float(self.global_start_until):
-            self.btn_toggle.setText("…  Démarrage")
-            self.btn_toggle.setObjectName("PrimaryButton")
-            self.btn_toggle.setEnabled(False)
+            self.btn_toggle.setText("⏹  Annuler")
+            self.btn_toggle.setObjectName("DangerButton")
+            self.btn_toggle.setEnabled(True)
             self.btn_toggle.style().unpolish(self.btn_toggle)
             self.btn_toggle.style().polish(self.btn_toggle)
         else:
