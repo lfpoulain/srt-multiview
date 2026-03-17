@@ -1,14 +1,99 @@
+import ctypes
+import hashlib
 import json
 import subprocess
 import sys
 import threading
 from collections import deque
+from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 
 from screeninfo import get_monitors
 
 from .paths import CONFIG_PATH, FFMPEG_PATH, FFPLAY_PATH
+
+
+DISPLAY_ID_SCHEMA_VERSION = 2
+CCHDEVICENAME = 32
+CCHFORMNAME = 32
+ENUM_CURRENT_SETTINGS = 0xFFFFFFFF
+DISPLAY_DEVICE_ATTACHED_TO_DESKTOP = 0x00000001
+DISPLAY_DEVICE_PRIMARY_DEVICE = 0x00000004
+DISPLAY_DEVICE_MIRRORING_DRIVER = 0x00000008
+
+
+class POINTL(ctypes.Structure):
+    _fields_ = [
+        ("x", wintypes.LONG),
+        ("y", wintypes.LONG),
+    ]
+
+
+class _DEVMODE_DISPLAY(ctypes.Structure):
+    _fields_ = [
+        ("dmPosition", POINTL),
+        ("dmDisplayOrientation", wintypes.DWORD),
+        ("dmDisplayFixedOutput", wintypes.DWORD),
+    ]
+
+
+class _DEVMODE_UNION_1(ctypes.Union):
+    _fields_ = [
+        ("dmOrientation", wintypes.SHORT),
+        ("_display", _DEVMODE_DISPLAY),
+    ]
+
+
+class _DEVMODE_UNION_2(ctypes.Union):
+    _fields_ = [
+        ("dmDisplayFlags", wintypes.DWORD),
+        ("dmNup", wintypes.DWORD),
+    ]
+
+
+class DEVMODEW(ctypes.Structure):
+    _anonymous_ = ("u1", "u2")
+    _fields_ = [
+        ("dmDeviceName", wintypes.WCHAR * CCHDEVICENAME),
+        ("dmSpecVersion", wintypes.WORD),
+        ("dmDriverVersion", wintypes.WORD),
+        ("dmSize", wintypes.WORD),
+        ("dmDriverExtra", wintypes.WORD),
+        ("dmFields", wintypes.DWORD),
+        ("u1", _DEVMODE_UNION_1),
+        ("dmColor", wintypes.SHORT),
+        ("dmDuplex", wintypes.SHORT),
+        ("dmYResolution", wintypes.SHORT),
+        ("dmTTOption", wintypes.SHORT),
+        ("dmCollate", wintypes.SHORT),
+        ("dmFormName", wintypes.WCHAR * CCHFORMNAME),
+        ("dmLogPixels", wintypes.WORD),
+        ("dmBitsPerPel", wintypes.DWORD),
+        ("dmPelsWidth", wintypes.DWORD),
+        ("dmPelsHeight", wintypes.DWORD),
+        ("u2", _DEVMODE_UNION_2),
+        ("dmDisplayFrequency", wintypes.DWORD),
+        ("dmICMMethod", wintypes.DWORD),
+        ("dmICMIntent", wintypes.DWORD),
+        ("dmMediaType", wintypes.DWORD),
+        ("dmDitherType", wintypes.DWORD),
+        ("dmReserved1", wintypes.DWORD),
+        ("dmReserved2", wintypes.DWORD),
+        ("dmPanningWidth", wintypes.DWORD),
+        ("dmPanningHeight", wintypes.DWORD),
+    ]
+
+
+class DISPLAY_DEVICEW(ctypes.Structure):
+    _fields_ = [
+        ("cb", wintypes.DWORD),
+        ("DeviceName", wintypes.WCHAR * 32),
+        ("DeviceString", wintypes.WCHAR * 128),
+        ("StateFlags", wintypes.DWORD),
+        ("DeviceID", wintypes.WCHAR * 128),
+        ("DeviceKey", wintypes.WCHAR * 128),
+    ]
 
 
 def _win_creationflags() -> int:
@@ -52,6 +137,138 @@ def _terminate_proc(proc: subprocess.Popen | None) -> None:
             pass
 
 
+def _config_display_schema_version(config: dict | None) -> int:
+    try:
+        return int((config or {}).get("displayIdSchemaVersion") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _clean_win_text(value) -> str:
+    return str(value or "").split("\x00", 1)[0].strip()
+
+
+def _stable_display_id(identity: str) -> str:
+    raw = str(identity or "").strip()
+    if not raw:
+        raw = "unknown"
+    digest = hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:20]
+    return f"disp-{digest}"
+
+
+def _sort_displays(displays: list[dict]) -> list[dict]:
+    ordered = sorted(
+        displays,
+        key=lambda d: (
+            int(d.get("y") or 0),
+            int(d.get("x") or 0),
+            0 if d.get("isPrimary") else 1,
+            str(d.get("id") or ""),
+        ),
+    )
+    for i, display in enumerate(ordered):
+        display["index"] = i
+    return ordered
+
+
+def _get_displays_windows(exclude_primary: bool = False, *, name_overrides: dict[str, str] | None = None) -> list[dict]:
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    enum_display_devices = user32.EnumDisplayDevicesW
+    enum_display_devices.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(DISPLAY_DEVICEW), wintypes.DWORD]
+    enum_display_devices.restype = wintypes.BOOL
+
+    enum_display_settings = user32.EnumDisplaySettingsExW
+    enum_display_settings.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(DEVMODEW), wintypes.DWORD]
+    enum_display_settings.restype = wintypes.BOOL
+
+    overrides = name_overrides or {}
+    displays: list[dict] = []
+    adapter_index = 0
+    while True:
+        adapter = DISPLAY_DEVICEW()
+        adapter.cb = ctypes.sizeof(DISPLAY_DEVICEW)
+        if not enum_display_devices(None, adapter_index, ctypes.byref(adapter), 0):
+            break
+        adapter_index += 1
+
+        state_flags = int(adapter.StateFlags or 0)
+        if not (state_flags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP):
+            continue
+        if state_flags & DISPLAY_DEVICE_MIRRORING_DRIVER:
+            continue
+
+        devmode = DEVMODEW()
+        devmode.dmSize = ctypes.sizeof(DEVMODEW)
+        adapter_device_name = _clean_win_text(adapter.DeviceName)
+        if not adapter_device_name:
+            continue
+        if not enum_display_settings(adapter_device_name, ENUM_CURRENT_SETTINGS, ctypes.byref(devmode), 0):
+            continue
+
+        is_primary = bool(state_flags & DISPLAY_DEVICE_PRIMARY_DEVICE)
+        if exclude_primary and is_primary:
+            continue
+
+        adapter_label = _clean_win_text(adapter.DeviceString)
+        adapter_device_id = _clean_win_text(adapter.DeviceID)
+        adapter_device_key = _clean_win_text(adapter.DeviceKey)
+
+        monitor_label = ""
+        monitor_device_id = ""
+        monitor_device_key = ""
+        monitor_index = 0
+        while True:
+            monitor = DISPLAY_DEVICEW()
+            monitor.cb = ctypes.sizeof(DISPLAY_DEVICEW)
+            if not enum_display_devices(adapter_device_name, monitor_index, ctypes.byref(monitor), 0):
+                break
+            monitor_index += 1
+
+            current_label = _clean_win_text(monitor.DeviceString)
+            current_device_id = _clean_win_text(monitor.DeviceID)
+            current_device_key = _clean_win_text(monitor.DeviceKey)
+            if current_label and not monitor_label:
+                monitor_label = current_label
+            if current_device_id or current_device_key:
+                monitor_device_id = current_device_id
+                monitor_device_key = current_device_key
+                if current_label:
+                    monitor_label = current_label
+                break
+
+        identity_parts = [monitor_device_id, monitor_device_key, adapter_device_id, adapter_device_key]
+        identity = "|".join(part for part in identity_parts if part)
+        position = devmode._display.dmPosition
+
+        if not identity:
+            identity = (
+                f"geom|{int(position.x)}|{int(position.y)}|"
+                f"{int(devmode.dmPelsWidth)}|{int(devmode.dmPelsHeight)}|{1 if is_primary else 0}"
+            )
+
+        display_id = _stable_display_id(identity)
+        display_name = monitor_label or adapter_label or adapter_device_name or f"Écran {len(displays) + 1}"
+        if overrides.get(display_id):
+            display_name = str(overrides[display_id])
+
+        displays.append(
+            {
+                "id": display_id,
+                "index": len(displays),
+                "name": display_name,
+                "width": int(devmode.dmPelsWidth),
+                "height": int(devmode.dmPelsHeight),
+                "x": int(position.x),
+                "y": int(position.y),
+                "isPrimary": is_primary,
+                "identity": identity,
+                "deviceName": adapter_device_name,
+            }
+        )
+
+    return _sort_displays(displays)
+
+
 def load_config() -> dict:
     if not CONFIG_PATH.exists():
         config = {
@@ -67,8 +284,12 @@ def load_config() -> dict:
 
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            config = json.load(f)
-            return normalize_config(config)
+            loaded = json.load(f)
+            schema_before = _config_display_schema_version(loaded)
+            config = normalize_config(loaded)
+            if schema_before != DISPLAY_ID_SCHEMA_VERSION:
+                save_config(config)
+            return config
     except (json.JSONDecodeError, ValueError):
         return normalize_config(
             {
@@ -83,6 +304,8 @@ def load_config() -> dict:
 
 def normalize_config(config: dict) -> dict:
     config = dict(config or {})
+    reset_display_bindings = _config_display_schema_version(config) != DISPLAY_ID_SCHEMA_VERSION
+    config["displayIdSchemaVersion"] = DISPLAY_ID_SCHEMA_VERSION
 
     config.setdefault("streams", [])
     config.setdefault("mapping", {})
@@ -94,7 +317,9 @@ def normalize_config(config: dict) -> dict:
     config["autoStartSender"] = bool(config.get("autoStartSender", False))
 
     display_names = config.get("displayNames") or {}
-    if isinstance(display_names, dict):
+    if reset_display_bindings:
+        config["displayNames"] = {}
+    elif isinstance(display_names, dict):
         config["displayNames"] = {str(k): str(v) for k, v in display_names.items() if v is not None}
     else:
         config["displayNames"] = {}
@@ -151,7 +376,7 @@ def normalize_config(config: dict) -> dict:
     sender.setdefault("fps", 30)
     sender.setdefault("bitrateK", 4000)
     sender.setdefault("encoder", "cpu")
-    sender["displayId"] = str(sender.get("displayId") or "")
+    sender["displayId"] = "" if reset_display_bindings else str(sender.get("displayId") or "")
     sender["host"] = str(sender.get("host") or "127.0.0.1")
     sender.pop("includeSystemAudio", None)
     sender_encoder = str(sender.get("encoder") or "cpu").strip().lower()
@@ -186,7 +411,7 @@ def normalize_config(config: dict) -> dict:
     receiver["decode"] = decode
     config["receiver"] = receiver
 
-    mapping = config.get("mapping") or {}
+    mapping = {} if reset_display_bindings else (config.get("mapping") or {})
     config["mapping"] = {str(k): str(v) for k, v in mapping.items() if v is not None}
 
     streams = config.get("streams") or []
@@ -251,6 +476,12 @@ def save_config(config: dict) -> None:
 
 
 def get_displays(exclude_primary: bool = False, *, name_overrides: dict[str, str] | None = None) -> list[dict]:
+    if sys.platform == "win32":
+        try:
+            return _get_displays_windows(exclude_primary=exclude_primary, name_overrides=name_overrides)
+        except Exception:
+            return []
+
     monitors = get_monitors()
     displays = []
     overrides = name_overrides or {}
@@ -297,7 +528,7 @@ def get_displays(exclude_primary: bool = False, *, name_overrides: dict[str, str
                 "isPrimary": bool(getattr(m, "is_primary", False)),
             }
         )
-    return displays
+    return _sort_displays(displays)
 
 
 @dataclass
@@ -905,7 +1136,9 @@ def apply_mapping(config: dict) -> dict[str, PlayerLaunchResult]:
     config = normalize_config(config)
 
     receiver_hwaccel = str((config.get("receiver") or {}).get("decode") or "cpu").strip().lower()
-    if receiver_hwaccel not in {"cpu", "gpu"}:
+    if receiver_hwaccel == "gpu":
+        receiver_hwaccel = "auto"
+    if receiver_hwaccel not in {"cpu", "auto", "dxva2", "h264_amf", "h264_cuvid", "h264_qsv"}:
         receiver_hwaccel = "cpu"
 
     results: dict[str, PlayerLaunchResult] = {}

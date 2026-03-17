@@ -2,7 +2,8 @@ import sys
 import time
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QIcon
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -34,7 +35,7 @@ from PySide6.QtWidgets import (
 import qdarktheme
 
 from . import core
-from .paths import APP_ICON_ICO_PATH, APP_ICON_PNG_PATH
+from .paths import APP_ICON_ICO_PATH, APP_ICON_PNG_PATH, CONFIG_PATH
 
 APP_ID = "srtmultiview.desktop"
 
@@ -1012,6 +1013,11 @@ class MainWindow(QMainWindow):
         self.auto_start_sender_chk.stateChanged.connect(self.on_auto_start_changed)
         prefs_layout.addWidget(self.auto_start_sender_chk)
 
+        self.btn_open_config_dir = QPushButton("📂  Ouvrir dossier config")
+        self.btn_open_config_dir.setMinimumHeight(34)
+        self.btn_open_config_dir.clicked.connect(self.open_config_directory)
+        prefs_layout.addWidget(self.btn_open_config_dir)
+
         self.btn_reset_config = QPushButton("↺  Réinitialiser")
         self.btn_reset_config.setObjectName("DangerButton")
         self.btn_reset_config.setMinimumHeight(34)
@@ -1227,6 +1233,23 @@ class MainWindow(QMainWindow):
         self.refresh_displays()
         self.reload_table()
         self.reload_sender_section()
+
+    def open_config_directory(self):
+        config_dir = CONFIG_PATH.parent
+        try:
+            config_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        target_url = QUrl.fromLocalFile(str(config_dir))
+        if QDesktopServices.openUrl(target_url):
+            return
+
+        QMessageBox.warning(
+            self,
+            "Configuration",
+            f"Impossible d'ouvrir le dossier de configuration.\n\n{config_dir}",
+        )
 
     def refresh_routes_status(self):
         self.routes_status_list.clear()
