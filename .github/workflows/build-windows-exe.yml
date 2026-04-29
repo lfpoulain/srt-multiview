@@ -30,30 +30,27 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install pyinstaller
 
-      - name: Download FFmpeg (ffmpeg.exe + ffplay.exe)
+      - name: Verify bundled FFmpeg (libomt-aware) in bin/
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
-          Write-Host "Downloading $url"
-          Invoke-WebRequest -Uri $url -OutFile "ffmpeg.zip"
-
-          if (Test-Path "ffmpeg") { Remove-Item -Recurse -Force "ffmpeg" }
-          Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg" -Force
-
-          New-Item -ItemType Directory -Force -Path "bin" | Out-Null
-
-          # Copy the whole FFmpeg bin/ folder (includes required DLLs when present)
-          $ffmpegBinRoot = Get-ChildItem -Path "ffmpeg" -Recurse -Directory |
-            Where-Object { Test-Path (Join-Path $_.FullName "bin\\ffmpeg.exe") } |
-            Select-Object -First 1
-
-          if (-not $ffmpegBinRoot) {
-            throw "FFmpeg bin folder not found in downloaded archive"
+          $required = @(
+            "bin\ffmpeg.exe",
+            "bin\ffplay.exe",
+            "bin\libomt.dll",
+            "bin\libomtnet.dll",
+            "bin\libvmx.dll"
+          )
+          $missing = @()
+          foreach ($p in $required) {
+            if (-not (Test-Path $p)) { $missing += $p }
           }
-
-          Copy-Item (Join-Path $ffmpegBinRoot.FullName "bin\\*") "bin\\" -Recurse -Force
-          Write-Host "FFmpeg bin/ copied to .\\bin\\"
+          if ($missing.Count -gt 0) {
+            Write-Host "::error::Missing required bundled binaries:`n$($missing -join "`n")"
+            exit 1
+          }
+          Write-Host "All required FFmpeg/OMT binaries are present in bin/."
+          Get-ChildItem bin\ | Format-Table Name, Length
 
       - name: Build EXE (PyInstaller)
         run: |

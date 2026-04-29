@@ -8,6 +8,19 @@ if (-not (Test-Path $py)) {
     throw "Python venv introuvable: $py. Crée/active le venv puis relance."
 }
 
+# Same sanity check as CI: ensure the OMT-aware FFmpeg + DLLs are bundled.
+$required = @(
+    "bin\ffmpeg.exe",
+    "bin\ffplay.exe",
+    "bin\libomt.dll",
+    "bin\libomtnet.dll",
+    "bin\libvmx.dll"
+)
+$missing = @($required | Where-Object { -not (Test-Path (Join-Path $PSScriptRoot $_)) })
+if ($missing.Count -gt 0) {
+    throw "Binaires manquants dans bin/ : `n$($missing -join "`n")"
+}
+
 & $py -m pip install --upgrade pip
 & $py -m pip install pyinstaller
 

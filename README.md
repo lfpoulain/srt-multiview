@@ -70,9 +70,9 @@ python -m srt_multiview
 L'exécutable est généré automatiquement via **GitHub Actions**.
 
 - À chaque `git push` sur `main`, le workflow publie (ou met à jour) une **pré-release** GitHub nommée **Nightly** (tag `nightly`) avec le dernier `SRT-MultiView.exe`.
-- Le workflow télécharge FFmpeg avant le build.
-- ⚠ Le FFmpeg embarqué dans la nightly **n'inclut pas `libomt`** ; pour utiliser OMT en local, remplace les binaires par une build OMT-aware.
-- Les binaires `bin/*.exe` ne doivent pas être versionnés (GitHub bloque les fichiers > 100 MB).
+- Le workflow **utilise directement le contenu de `bin/`** versionné dans le repo (FFmpeg + DLLs `libomt`/`libvmx`). Plus de download externe → la Nightly est OMT-aware out of the box.
+- Le job de build vérifie la présence de `ffmpeg.exe`, `ffplay.exe`, `libomt.dll`, `libomtnet.dll`, `libvmx.dll` et échoue si l'un manque.
+- ⚠ Si tu remplaces `bin/ffmpeg.exe` par une build standard (sans `libomt`), l'EXE compile toujours mais l'émission/réception OMT renverra `Unknown encoder/muxer 'libomt'`.
 
 Pour télécharger l'exe :
 
