@@ -1,31 +1,36 @@
 # SRT Multiview
 
-Application locale Python pour router des flux SRT vers plusieurs écrans Windows, avec émission SRT intégrée.
+Application locale Python pour router et lire plusieurs flux SRT sur des écrans Windows, avec une émission **OMT** intégrée pour publier un écran sur le réseau.
 
 ## Fonctionnalités
 
-- **Réception SRT** : Écoute plusieurs flux SRT en mode `listener` (vous envoyez en `caller`)
-- **Routage SRT → UDP multicast** : Duplication d'un flux SRT via `ffmpeg` pour alimenter plusieurs écrans (`ffplay` lit le multicast)
-- **Source par flux** : Chaque flux peut lire en **SRT direct** ou depuis une **Route**
-- **Contrôle par flux** : Bouton ▶/⏹ par flux + statut (arrêté / démarrage / en cours)
+- **Réception SRT** : écoute plusieurs flux SRT en mode `listener` (la régie envoie en `caller`)
+- **Réception OMT** : ajoute un flux dont la source est une publication OMT découverte sur le LAN
+- **Routage SRT → UDP multicast** : un seul flux SRT peut alimenter plusieurs `ffplay` via une sortie multicast `ffmpeg`
+- **Source par flux** : SRT direct, OMT, ou Route
+- **Contrôle par flux** : Bouton ▶/⏹, statut (arrêté / démarrage / en cours), purge des logs
 - **Rotation par flux** : 0° / 90° / 180° / 270°
 - **Modes d'affichage** : fit / fill / stretch
-- **Émission SRT** : Capture un écran et l'envoie en SRT via ffmpeg (mode `caller`)
-- **Multi-écrans** : Affiche chaque flux en plein écran sur un écran Windows différent
-- **Exclusion écran principal** : Option pour ne pas utiliser l'écran de travail
-- **Auto-mapping** : Peut créer automatiquement des flux si nécessaire
-- **Reset global** : Réinitialise toute la configuration et stoppe lectures/émission/routes
-- **Configuration persistante** : Flux, mapping, routes, options et paramètres d'émission sauvegardés
+- **Émission OMT** : capture un écran (gdigrab) et le publie comme source OMT (`libomt`, codec VMX)
+- **Multi-écrans** : chaque flux occupe un écran Windows en plein écran
+- **Exclusion écran principal** : option pour réserver l'écran de travail
+- **Auto-mapping** : assigne automatiquement les flux aux écrans disponibles
+- **Reset global** : réinitialise toute la configuration et stoppe lectures/émission/routes
+- **Découverte OMT** : modal de scan des sources OMT visibles sur le LAN
+- **Configuration persistante** : flux, mapping, routes, options et paramètres d'émission sauvegardés (atomique + backup en cas de JSON corrompu)
 
 ## Prérequis
 
 1. **Python 3.10+**
-2. **ffplay** et **ffmpeg** (inclus avec FFmpeg) dans le dossier `bin/` (uniquement si tu exécutes/build en local)
+2. **`ffplay.exe`** et **`ffmpeg.exe`** dans le dossier `bin/` du projet (uniquement en exécution locale)
+3. Le `ffmpeg.exe` **doit être compilé avec `libomt`** pour que l'émission et la réception OMT fonctionnent (les builds standards de FFmpeg n'incluent pas libomt — voir [openmediatransport/ffmpeg](https://github.com/openmediatransport)).
 
-### Installation de ffplay / ffmpeg
+### Installation des binaires FFmpeg
 
-1. Télécharger FFmpeg : https://github.com/BtbN/FFmpeg-Builds/releases
-2. Extraire `ffplay.exe` et `ffmpeg.exe` dans le dossier `bin/` du projet
+1. Télécharger un build FFmpeg avec `libomt` (ou compiler depuis le fork OMT).
+2. Copier `ffmpeg.exe` et `ffplay.exe` dans `bin/`.
+
+## Arborescence
 
 ```
 srt-multiview/
@@ -33,26 +38,20 @@ srt-multiview/
 │   ├── ffmpeg.exe
 │   └── ffplay.exe
 ├── build_exe.ps1
-├── config.json
 ├── img/
 │   ├── icon.ico
 │   └── icon.png
 ├── pyproject.toml
-├── run_app.py
 ├── srt_multiview/
 │   ├── __init__.py
 │   ├── __main__.py
 │   ├── core.py
 │   ├── paths.py
+│   ├── styles.py
 │   └── ui.py
 ├── srt_multiview.spec
 └── requirements.txt
 ```
-
-## Licence
-
-Srt-MultiView © 2026 by LFPoulain is licensed under CC BY-NC-SA 4.0.
-To view a copy of this license, visit https://creativecommons.org/licenses/by-nc-sa/4.0/.
 
 ## Installation
 
@@ -71,8 +70,9 @@ python -m srt_multiview
 L'exécutable est généré automatiquement via **GitHub Actions**.
 
 - À chaque `git push` sur `main`, le workflow publie (ou met à jour) une **pré-release** GitHub nommée **Nightly** (tag `nightly`) avec le dernier `SRT-MultiView.exe`.
-- Le workflow télécharge FFmpeg (pour obtenir `ffmpeg.exe` et `ffplay.exe`) avant le build.
-- Les binaires `bin/*.exe` ne doivent pas être versionnés (GitHub bloque les fichiers > 100MB).
+- Le workflow télécharge FFmpeg avant le build.
+- ⚠ Le FFmpeg embarqué dans la nightly **n'inclut pas `libomt`** ; pour utiliser OMT en local, remplace les binaires par une build OMT-aware.
+- Les binaires `bin/*.exe` ne doivent pas être versionnés (GitHub bloque les fichiers > 100 MB).
 
 Pour télécharger l'exe :
 
@@ -82,57 +82,74 @@ Pour télécharger l'exe :
 
 ### Workflow — Réception
 
-1. **Configurer les flux** : Ajouter des flux (« + Ajouter un flux »)
+1. **Ajouter un flux** (« + Ajouter un flux »)
 2. **Choisir la source** :
    - **SRT** : l'app écoute `srt://0.0.0.0:PORT` (listener)
+   - **OMT** : saisir le nom de la source ou utiliser 🔍 pour la découvrir sur le LAN
    - **Route** : sélectionner une route existante (voir section Routage)
-3. **Mapper les écrans** : Associer chaque flux à un écran via le sélecteur
-4. **Démarrer** : Cliquer sur « ▶ Démarrer tout » (ou ▶ sur un flux)
-5. **Envoyer depuis la régie** : Utiliser OBS/vMix/etc. en mode `caller` vers `srt://IP:PORT`
+3. **Mapper l'écran** : associer le flux à un écran via le sélecteur
+4. **Démarrer** : ▶ sur le flux (ou « ▶ Démarrer tout »)
+5. **Envoyer depuis la régie** : OBS/vMix/etc. en `caller` vers `srt://IP:PORT`
 
-### Workflow — Émission
+> 💡 Si un écran assigné n'est pas détecté au lancement (en veille, replug…), l'application **conserve** le binding et affiche `⚠ Écran absent` dans le sélecteur. Dès que l'écran réapparaît, le flux peut être démarré normalement — plus de mapping perdu au redémarrage.
 
-1. **Sélectionner l'écran** à capturer dans le panneau « Émission SRT »
-2. **Configurer** : hôte destination, port, latence, FPS, bitrate
-3. **Émettre** : Cliquer sur « ▶ Émettre »
+### Workflow — Émission OMT
 
-### Exemple OBS
+1. **Sélectionner l'écran** à capturer dans le panneau « 📡 Émission OMT »
+2. **Configurer** :
+   - **Nom OMT** : nom publié sur le réseau (visible par les receveurs)
+   - **FPS** : 1 à 60
+   - **Pixel format** : `UYVY 4:2:2` (recommandé), `BGRA` (4:4:4 avec alpha) ou `YUV422P10LE` (10-bit)
+   - **Clock output** : option `libomt -clock_output 1`
+3. **Émettre** : « ▶ Émettre »
+
+L'audio n'est pas (encore) géré côté émetteur.
+
+### Exemple OBS — émission SRT vers SRT Multiview
 
 Dans OBS, créer une sortie SRT :
+
 ```
 srt://192.168.1.100:9001?mode=caller&latency=120000
 ```
 
 ## Configuration
 
-La configuration est stockée dans le fichier utilisateur :
+La configuration est stockée dans le fichier utilisateur, dans le dossier dédié de l'application :
 
-- Windows : `%USERPROFILE%\srt-multiview-config.json`
+- Windows : `%APPDATA%\srt-multiview\config.json`
+- macOS / Linux : `~/.config/srt-multiview/config.json` (les binaires y sont aussi cherchés en fallback)
 
-Il stocke notamment :
+Sauvegarde **atomique** (fichier temporaire + `os.replace` + `fsync`). Si le JSON existant est corrompu au chargement, il est renommé en `config.json.bak` avant la création d'un nouveau fichier vierge.
 
-- Les flux (nom, source SRT/Route, port/latence, mode d'affichage, rotation)
-- Le mapping flux → écran
-- Les noms d'écrans personnalisés
-- Les routes de routage (SRT in port/latence, UDP multicast out)
-- Les options (exclure écran principal, auto-start)
-- Les paramètres d'émission SRT (écran, hôte, port, latence, FPS, bitrate)
+Champs principaux :
 
-`config.json` à la racine du repo est un exemple, il n'est pas utilisé par l'app.
+- **Flux** : nom, source (`srt` / `omt` / `route`), port/latence SRT, source OMT, mode d'affichage, rotation
+- **Mapping** : flux → écran (préservé même si l'écran disparaît temporairement)
+- **Noms d'écrans** personnalisés
+- **Routes** : port SRT in, latence, sortie UDP multicast
+- **Options** : exclure écran principal, auto-start réception/émission
+- **Émission OMT** : écran, nom, fps, pixel format, clock output, reference level
 
 ## Routage (SRT → UDP multicast)
 
-Le routage sert à **dupliquer** un flux SRT en une sortie UDP multicast lisible par plusieurs `ffplay`.
+Le routage **duplique** un flux SRT en sortie UDP multicast pour qu'il soit lu par plusieurs `ffplay`.
 
 - Une **Route** écoute un port SRT (listener)
 - `ffmpeg` repack en MPEG-TS et sort vers `udp://@239.x.x.x:PORT`
 - Plusieurs écrans peuvent lire la même route en parallèle
 
-Note : le démarrage via UDP peut prendre quelques secondes. L'UI affiche un état **"démarrage"** (loader) pendant ce temps.
+Note : le démarrage UDP peut prendre quelques secondes. L'UI affiche un état **« démarrage »** (loader) pendant ce temps.
 
 ## Notes techniques
 
-- ffplay est lancé avec `-fs` (fullscreen) positionné sur l'écran cible
-- ffmpeg est utilisé pour la capture d'écran et l'émission SRT en mode `caller`
-- La latence SRT est en millisecondes (120 = 120ms par défaut)
-- Les flux entrants sont en mode `listener` (l'app attend les connexions)
+- `ffplay` est lancé avec `-fs` (fullscreen) positionné via `-left`/`-top` sur l'écran cible
+- `ffmpeg gdigrab` capture l'écran ; le pipeline OMT est sans encodeur applicatif (le codec VMX est appliqué par `libomt` lui-même, via `wrapped_avframe`)
+- Latence SRT en millisecondes (120 ms par défaut)
+- Les flux SRT entrants sont en `listener` ; l'émission OMT publie en TCP sur la plage **6400-6600** (DNS-SD via Bonjour/Avahi pour la découverte)
+- Le décodage côté receveur peut être forcé en CPU ou délégué à un accélérateur matériel (`dxva2`, `h264_cuvid`, `h264_qsv`, `h264_amf`, ou détection auto)
+
+## Licence
+
+Srt-MultiView © 2026 by LFPoulain — licence **CC BY-NC-SA 4.0**.
+Voir https://creativecommons.org/licenses/by-nc-sa/4.0/.

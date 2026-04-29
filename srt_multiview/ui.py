@@ -1,8 +1,8 @@
 import sys
 import time
+import uuid
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -32,431 +32,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-import qdarktheme
-
 from . import core
 from .paths import APP_ICON_ICO_PATH, APP_ICON_PNG_PATH, CONFIG_PATH
+from .styles import apply_theme, enable_hi_dpi
 
 APP_ID = "srtmultiview.desktop"
 
-APP_STYLESHEET = """
-QWidget {
-    background: #0b1120;
-    color: #e2e8f0;
-    font-size: 12px;
-}
-QCheckBox {
-    spacing: 8px;
-    padding: 3px 0px;
-}
-QCheckBox::indicator {
-    width: 16px;
-    height: 16px;
-}
-QCheckBox::indicator:unchecked {
-    border: 1px solid #334155;
-    border-radius: 4px;
-    background: #0b1120;
-}
-QCheckBox::indicator:checked {
-    border: 1px solid #1d4ed8;
-    border-radius: 4px;
-    background: #2563eb;
-}
-QLabel#Title {
-    font-size: 22px;
-    font-weight: 700;
-    color: #f8fafc;
-    letter-spacing: 0.5px;
-}
-QLabel#Subtitle {
-    color: #94a3b8;
-    font-size: 11px;
-}
-QLabel#SectionTitle {
-    font-size: 13px;
-    font-weight: 600;
-    color: #e2e8f0;
-}
-QLabel#StatusChip {
-    background: #1e293b;
-    color: #e2e8f0;
-    padding: 4px 14px;
-    border-radius: 12px;
-    font-size: 11px;
-    font-weight: 500;
-}
-QLabel#SenderChipRunning {
-    background: #14532d;
-    color: #86efac;
-    padding: 4px 14px;
-    border-radius: 12px;
-    font-size: 11px;
-    font-weight: 600;
-}
-QLabel#SenderChipStopped {
-    background: #1e293b;
-    color: #94a3b8;
-    padding: 4px 14px;
-    border-radius: 12px;
-    font-size: 11px;
-    font-weight: 500;
-}
-QFrame#Card, QGroupBox {
-    background: #111827;
-    border: 1px solid #1f2937;
-    border-radius: 12px;
-}
-QGroupBox {
-    font-weight: 600;
-    padding-top: 20px;
-    margin-top: 8px;
-}
-QGroupBox::title {
-    subcontrol-origin: margin;
-    left: 12px;
-    padding: 0 8px;
-    color: #cbd5f5;
-    font-size: 12px;
-}
-QPushButton {
-    background: #1f2937;
-    border: 1px solid #334155;
-    border-radius: 8px;
-    padding: 7px 16px;
-    font-weight: 500;
-}
-QPushButton:hover {
-    background: #263247;
-    border-color: #475569;
-}
-QPushButton:pressed {
-    background: #1a202e;
-}
-QPushButton#PrimaryButton {
-    background: #2563eb;
-    border-color: #1d4ed8;
-    color: #ffffff;
-}
-QPushButton#PrimaryButton:hover {
-    background: #3b82f6;
-}
-QPushButton#PrimaryButton:pressed {
-    background: #1d4ed8;
-}
-QPushButton#SuccessButton {
-    background: #16a34a;
-    border-color: #15803d;
-    color: #ffffff;
-}
-QPushButton#SuccessButton:hover {
-    background: #22c55e;
-}
-QPushButton#SuccessButton:pressed {
-    background: #15803d;
-}
-QPushButton#DangerButton {
-    background: #dc2626;
-    border-color: #b91c1c;
-    color: #ffffff;
-}
-QPushButton#DangerButton:hover {
-    background: #ef4444;
-}
-QPushButton#DangerButton:pressed {
-    background: #b91c1c;
-}
-QLineEdit, QSpinBox, QComboBox {
-    background: #0b1220;
-    border: 1px solid #1f2937;
-    border-radius: 6px;
-    padding: 4px 8px;
-    selection-background-color: #334155;
-}
-QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
-    border-color: #6366f1;
-}
-QListWidget {
-    background: #0b1220;
-    border: 1px solid #1f2937;
-    border-radius: 10px;
-}
-QListWidget::item {
-    padding: 8px 10px;
-    border-radius: 6px;
-}
-QListWidget::item:selected {
-    background: #1f2937;
-}
-QSplitter::handle {
-    background: transparent;
-    width: 8px;
-}
-QScrollBar:vertical {
-    background: transparent;
-    width: 8px;
-    margin: 4px 0;
-}
-QScrollBar::handle:vertical {
-    background: #334155;
-    border-radius: 4px;
-    min-height: 30px;
-}
-QScrollBar::handle:vertical:hover {
-    background: #475569;
-}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-    height: 0px;
-}
-QScrollBar:horizontal {
-    background: transparent;
-    height: 8px;
-    margin: 0 4px;
-}
-QScrollBar::handle:horizontal {
-    background: #334155;
-    border-radius: 4px;
-    min-width: 30px;
-}
-QScrollBar::handle:horizontal:hover {
-    background: #475569;
-}
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
-    width: 0px;
-}
-QCheckBox {
-    spacing: 8px;
-}
-QCheckBox::indicator {
-    width: 16px;
-    height: 16px;
-    border-radius: 4px;
-    border: 1px solid #475569;
-    background: #1e293b;
-}
-QCheckBox::indicator:checked {
-    background: #6366f1;
-    border-color: #6366f1;
-}
-QLabel#FormLabel {
-    color: #94a3b8;
-    font-size: 11px;
-    min-width: 70px;
-}
-QLabel#EmptyPlaceholder {
-    color: #475569;
-    font-size: 13px;
-    font-style: italic;
-}
-QFrame#StreamCard {
-    background: #0f172a;
-    border: 1px solid #1f2937;
-    border-radius: 10px;
-    padding: 0px;
-}
-QFrame#StreamCard:hover {
-    border-color: #334155;
-}
-QFrame#StreamCardRunning {
-    background: #0f172a;
-    border: 1px solid #166534;
-    border-radius: 10px;
-    padding: 0px;
-}
-QLabel#StreamName {
-    font-size: 13px;
-    font-weight: 600;
-    color: #f1f5f9;
-}
-QLabel#StatusDotRunning {
-    color: #22c55e;
-    font-size: 18px;
-}
-QLabel#StatusDotStopped {
-    color: #475569;
-    font-size: 18px;
-}
-QPushButton#CardDeleteBtn {
-    background: transparent;
-    border: none;
-    color: #64748b;
-    font-size: 14px;
-    padding: 2px 6px;
-    border-radius: 4px;
-}
-QPushButton#CardDeleteBtn:hover {
-    background: #7f1d1d;
-    color: #fca5a5;
-}
-"""
-
-DRACULA_OVERLAY_QSS = """
-QLabel#Title {
-    font-size: 22px;
-    font-weight: 700;
-    color: #f8f8f2;
-}
-QLabel#Subtitle {
-    color: #6272a4;
-    font-size: 11px;
-}
-QLabel#StatusChip {
-    background: #44475a;
-    color: #f8f8f2;
-    padding: 4px 14px;
-    border-radius: 12px;
-    font-size: 11px;
-}
-QLabel#SenderChipRunning {
-    background: #1a3a2a;
-    color: #50fa7b;
-    padding: 4px 14px;
-    border-radius: 12px;
-    font-size: 11px;
-    font-weight: 600;
-}
-QLabel#SenderChipStopped {
-    background: #44475a;
-    color: #6272a4;
-    padding: 4px 14px;
-    border-radius: 12px;
-    font-size: 11px;
-}
-QFrame#Card, QGroupBox {
-    background: #21222c;
-    border: 1px solid #44475a;
-    border-radius: 12px;
-}
-QGroupBox::title {
-    subcontrol-origin: margin;
-    left: 12px;
-    padding: 0 8px;
-    color: #bd93f9;
-    font-size: 12px;
-}
-QPushButton#PrimaryButton {
-    background: #bd93f9;
-    border-color: #bd93f9;
-    color: #282a36;
-}
-QPushButton#PrimaryButton:hover {
-    background: #caa9fa;
-}
-QPushButton#PrimaryButton:pressed {
-    background: #a87df5;
-}
-QPushButton#SuccessButton {
-    background: #50fa7b;
-    border-color: #50fa7b;
-    color: #282a36;
-}
-QPushButton#SuccessButton:hover {
-    background: #6bff91;
-}
-QPushButton#SuccessButton:pressed {
-    background: #3de068;
-}
-QPushButton#DangerButton {
-    background: #ff5555;
-    border-color: #ff5555;
-    color: #282a36;
-}
-QPushButton#DangerButton:hover {
-    background: #ff6e6e;
-}
-QPushButton#DangerButton:pressed {
-    background: #e04040;
-}
-
-QLabel#GlobalStateRunning {
-    background: #1a3a2a;
-    color: #50fa7b;
-    padding: 4px 14px;
-    border-radius: 12px;
-    font-size: 11px;
-    font-weight: 700;
-}
-
-QLabel#GlobalStateStopped {
-    background: #3d1f1f;
-    color: #ff5555;
-    padding: 4px 14px;
-    border-radius: 12px;
-    font-size: 11px;
-    font-weight: 700;
-}
-
-QLineEdit, QSpinBox, QComboBox {
-    padding: 4px 8px;
-    min-height: 28px;
-    max-height: 28px;
-}
-QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
-    border-color: #bd93f9;
-}
-
-QComboBox::drop-down {
-    border: 0px;
-}
-
-QCheckBox::indicator:checked {
-    background: #bd93f9;
-    border-color: #bd93f9;
-}
-
-QLabel#FormLabel {
-    color: #6272a4;
-}
-
-QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
-    background: #44475a;
-}
-QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
-    background: #6272a4;
-}
-
-QFrame#StreamCard {
-    background: #282a36;
-    border: 1px solid #44475a;
-}
-QFrame#StreamCard:hover {
-    border-color: #6272a4;
-}
-QFrame#StreamCardRunning {
-    background: #282a36;
-    border: 1px solid #50fa7b;
-}
-QLabel#StreamName {
-    color: #f8f8f2;
-}
-QLabel#StatusDotRunning {
-    color: #50fa7b;
-}
-QLabel#StatusDotStopped {
-    color: #44475a;
-}
-QLabel#StatusDotStarting {
-    color: #f59e0b;
-}
-QPushButton#CardDeleteBtn {
-    color: #6272a4;
-}
-QPushButton#CardDeleteBtn:hover {
-    background: #3d1f1f;
-    color: #ff5555;
-}
-"""
-
-
-def apply_theme(app: QApplication) -> None:
-    app.setStyle("Fusion")
-    app.setFont(QFont("Bahnschrift", 10))
-    qdarktheme.setup_theme(
-        theme="dark",
-        corner_shape="rounded",
-        custom_colors={"primary": "#bd93f9"},
-        additional_qss=DRACULA_OVERLAY_QSS,
-    )
 
 
 class RoutingDialog(QDialog):
@@ -682,8 +263,7 @@ class RoutingDialog(QDialog):
         self.btn_toggle.style().polish(self.btn_toggle)
 
     def add_route(self):
-        now = int(time.time() * 1000)
-        rid = f"route-{now}"
+        rid = f"route-{uuid.uuid4().hex[:12]}"
         name, ok = QInputDialog.getText(self, "Nouvelle route", "Nom de la route :", text=f"Route {self.routes_list.count() + 1}")
         if not ok:
             return
@@ -772,8 +352,7 @@ class RoutingDialog(QDialog):
         route = next((r for r in routes if str(r.get("id")) == rid), None) if rid else None
 
         if not route:
-            now = int(time.time() * 1000)
-            rid = f"route-{now}"
+            rid = f"route-{uuid.uuid4().hex[:12]}"
             route = {"id": rid}
             routes.append(route)
 
@@ -817,6 +396,117 @@ class RoutingDialog(QDialog):
         if not result.ok:
             QMessageBox.warning(self, "Routage", "Impossible de démarrer la route.\n\n" + (result.reason or "Erreur inconnue."))
         self.refresh_routes()
+
+
+class _OMTDiscoveryWorker(QObject):
+    finished = Signal(list, str)
+
+    def __init__(self, timeout: float = 8.0):
+        super().__init__()
+        self._timeout = float(timeout)
+
+    def run(self) -> None:
+        sources, error = core.list_omt_sources(self._timeout)
+        self.finished.emit(list(sources), error or "")
+
+
+class OMTDiscoveryDialog(QDialog):
+    """Modal source picker that runs ``ffmpeg -find_sources`` off the UI thread."""
+
+    def __init__(self, parent: QWidget, current: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle("Découverte OMT")
+        self.setMinimumSize(520, 360)
+        self.selected_source: str = ""
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        self.status_label = QLabel("Recherche en cours…")
+        self.status_label.setObjectName("Subtitle")
+        layout.addWidget(self.status_label)
+
+        self.list_widget = QListWidget()
+        self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.list_widget.itemDoubleClicked.connect(lambda _i: self._accept_selection())
+        layout.addWidget(self.list_widget, stretch=1)
+
+        manual_row = QHBoxLayout()
+        manual_row.setSpacing(8)
+        manual_lbl = QLabel("Source")
+        manual_lbl.setObjectName("FormLabel")
+        manual_lbl.setFixedWidth(60)
+        manual_row.addWidget(manual_lbl)
+        self.manual_edit = QLineEdit(current)
+        self.manual_edit.setPlaceholderText("HOST (Source Name)")
+        self.manual_edit.setFixedHeight(28)
+        manual_row.addWidget(self.manual_edit, stretch=1)
+        layout.addLayout(manual_row)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        self.refresh_btn = QPushButton("↻  Re-scanner")
+        self.refresh_btn.clicked.connect(self._start_discovery)
+        btn_row.addWidget(self.refresh_btn)
+
+        cancel_btn = QPushButton("Annuler")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+
+        ok_btn = QPushButton("Sélectionner")
+        ok_btn.setObjectName("PrimaryButton")
+        ok_btn.clicked.connect(self._accept_selection)
+        btn_row.addWidget(ok_btn)
+        layout.addLayout(btn_row)
+
+        self._thread: QThread | None = None
+        self._worker: _OMTDiscoveryWorker | None = None
+
+        QTimer.singleShot(0, self._start_discovery)
+
+    def _start_discovery(self) -> None:
+        if self._thread is not None and self._thread.isRunning():
+            return
+        self.refresh_btn.setEnabled(False)
+        self.status_label.setText("Recherche en cours…")
+        self.list_widget.clear()
+
+        self._thread = QThread(self)
+        self._worker = _OMTDiscoveryWorker(timeout=8.0)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.finished.connect(self._thread.quit)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.start()
+
+    def _on_finished(self, sources: list, error: str) -> None:
+        self.refresh_btn.setEnabled(True)
+        self._thread = None
+        self._worker = None
+        self.list_widget.clear()
+        if error:
+            self.status_label.setText(f"⚠ {error}")
+            return
+        if not sources:
+            self.status_label.setText("Aucune source OMT détectée sur le réseau.")
+            return
+        self.status_label.setText(f"{len(sources)} source(s) détectée(s).")
+        for src in sources:
+            QListWidgetItem(str(src), self.list_widget)
+        self.list_widget.setCurrentRow(0)
+
+    def _accept_selection(self) -> None:
+        item = self.list_widget.currentItem()
+        manual = self.manual_edit.text().strip()
+        chosen = (item.text().strip() if item else "") or manual
+        if not chosen:
+            QMessageBox.warning(self, "Découverte OMT", "Sélectionne une source ou saisis-en une.")
+            return
+        self.selected_source = chosen
+        self.accept()
 
 
 class MainWindow(QMainWindow):
@@ -869,7 +559,7 @@ class MainWindow(QMainWindow):
 
         title = QLabel("SRT Multiview")
         title.setObjectName("Title")
-        subtitle = QLabel("Routing & émission SRT vers écrans Windows")
+        subtitle = QLabel("Routing SRT & émission OMT vers écrans Windows")
         subtitle.setObjectName("Subtitle")
 
         chip_row = QHBoxLayout()
@@ -1025,7 +715,7 @@ class MainWindow(QMainWindow):
         prefs_layout.addWidget(self.btn_reset_config)
 
         # ── Sender group ──
-        sender_group = QGroupBox("📡  Émission SRT")
+        sender_group = QGroupBox("📡  Émission OMT")
         sender_layout = QVBoxLayout(sender_group)
         sender_layout.setSpacing(10)
 
@@ -1047,74 +737,46 @@ class MainWindow(QMainWindow):
 
         sender_row2 = QHBoxLayout()
         sender_row2.setSpacing(8)
-        sender_row2.addWidget(_form_label("Destination"))
-        self.sender_host_edit = QLineEdit()
-        self.sender_host_edit.setFixedHeight(28)
-        self.sender_host_edit.setPlaceholderText("ex: 192.168.1.100")
-        self.sender_host_edit.editingFinished.connect(self.on_sender_changed)
-        sender_row2.addWidget(self.sender_host_edit, stretch=1)
-        port_label = QLabel(":")
-        port_label.setFixedWidth(8)
-        port_label.setAlignment(Qt.AlignCenter)
-        sender_row2.addWidget(port_label)
-        self.sender_port_spin = QSpinBox()
-        self.sender_port_spin.setRange(1, 65535)
-        self.sender_port_spin.setButtonSymbols(QSpinBox.NoButtons)
-        self.sender_port_spin.setFixedHeight(28)
-        self.sender_port_spin.setFixedWidth(70)
-        self.sender_port_spin.valueChanged.connect(self.on_sender_changed)
-        sender_row2.addWidget(self.sender_port_spin)
+        sender_row2.addWidget(_form_label("Nom OMT"))
+        self.sender_name_edit = QLineEdit()
+        self.sender_name_edit.setFixedHeight(28)
+        self.sender_name_edit.setPlaceholderText("Nom publié sur le réseau (ex: SRT Multiview)")
+        self.sender_name_edit.editingFinished.connect(self.on_sender_changed)
+        sender_row2.addWidget(self.sender_name_edit, stretch=1)
         sender_layout.addLayout(sender_row2)
 
         sender_row3 = QHBoxLayout()
         sender_row3.setSpacing(8)
-        sender_row3.addWidget(_form_label("Latence"))
-        self.sender_latency_spin = QSpinBox()
-        self.sender_latency_spin.setRange(0, 5000)
-        self.sender_latency_spin.setSuffix(" ms")
-        self.sender_latency_spin.setButtonSymbols(QSpinBox.NoButtons)
-        self.sender_latency_spin.setFixedHeight(28)
-        self.sender_latency_spin.valueChanged.connect(self.on_sender_changed)
-        sender_row3.addWidget(self.sender_latency_spin, stretch=1)
-        fps_label = QLabel("FPS")
-        fps_label.setObjectName("FormLabel")
-        fps_label.setFixedWidth(30)
-        fps_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        sender_row3.addWidget(fps_label)
+        sender_row3.addWidget(_form_label("FPS"))
         self.sender_fps_spin = QSpinBox()
         self.sender_fps_spin.setRange(1, 60)
         self.sender_fps_spin.setButtonSymbols(QSpinBox.NoButtons)
         self.sender_fps_spin.setFixedHeight(28)
-        self.sender_fps_spin.setFixedWidth(50)
+        self.sender_fps_spin.setFixedWidth(60)
         self.sender_fps_spin.valueChanged.connect(self.on_sender_changed)
         sender_row3.addWidget(self.sender_fps_spin)
+
+        pf_lbl = QLabel("Pixel")
+        pf_lbl.setObjectName("FormLabel")
+        pf_lbl.setFixedWidth(40)
+        pf_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        sender_row3.addWidget(pf_lbl)
+        self.sender_pixfmt_combo = QComboBox()
+        self.sender_pixfmt_combo.addItem("UYVY 4:2:2", "uyvy422")
+        self.sender_pixfmt_combo.addItem("BGRA", "bgra")
+        self.sender_pixfmt_combo.addItem("YUV422P10LE", "yuv422p10le")
+        self.sender_pixfmt_combo.setFixedHeight(28)
+        self.sender_pixfmt_combo.currentIndexChanged.connect(self.on_sender_changed)
+        sender_row3.addWidget(self.sender_pixfmt_combo, stretch=1)
         sender_layout.addLayout(sender_row3)
 
         sender_row4 = QHBoxLayout()
-        sender_row4.setSpacing(8)
-        sender_row4.addWidget(_form_label("Débit"))
-        self.sender_bitrate_spin = QSpinBox()
-        self.sender_bitrate_spin.setRange(200, 50000)
-        self.sender_bitrate_spin.setSingleStep(250)
-        self.sender_bitrate_spin.setSuffix(" kbps")
-        self.sender_bitrate_spin.setButtonSymbols(QSpinBox.NoButtons)
-        self.sender_bitrate_spin.setFixedHeight(28)
-        self.sender_bitrate_spin.valueChanged.connect(self.on_sender_changed)
-        sender_row4.addWidget(self.sender_bitrate_spin, stretch=1)
+        sender_row4.setSpacing(10)
+        self.sender_clock_chk = QCheckBox("Clock output")
+        self.sender_clock_chk.setToolTip("Active l'option libomt -clock_output 1")
+        self.sender_clock_chk.stateChanged.connect(self.on_sender_changed)
+        sender_row4.addWidget(self.sender_clock_chk)
         sender_layout.addLayout(sender_row4)
-
-        sender_row4b = QHBoxLayout()
-        sender_row4b.setSpacing(10)
-        sender_row4b.addWidget(_form_label("Encodeur"))
-        self.sender_encoder_combo = QComboBox()
-        self.sender_encoder_combo.addItem("CPU", "cpu")
-        self.sender_encoder_combo.addItem("GPU (Auto)", "auto")
-        self.sender_encoder_combo.addItem("GPU (NVENC)", "nvenc")
-        self.sender_encoder_combo.addItem("GPU (AMF)", "amf")
-        self.sender_encoder_combo.setFixedHeight(28)
-        self.sender_encoder_combo.currentIndexChanged.connect(self.on_sender_changed)
-        sender_row4b.addWidget(self.sender_encoder_combo, stretch=1)
-        sender_layout.addLayout(sender_row4b)
 
         sender_row5 = QHBoxLayout()
         sender_row5.setSpacing(10)
@@ -1420,6 +1082,8 @@ class MainWindow(QMainWindow):
 
         self.stop_all()
 
+        for sid in list(core.player_manager.player_logs.keys()):
+            core.player_manager.clear_logs(sid)
         self.pending_stream_starts.clear()
 
         self.config = {
@@ -1432,11 +1096,11 @@ class MainWindow(QMainWindow):
             "autoStartSender": False,
             "sender": {
                 "displayId": "",
-                "host": "127.0.0.1",
-                "port": 10000,
-                "latency": 120,
+                "name": "SRT Multiview",
                 "fps": 30,
-                "bitrateK": 4000,
+                "pixelFormat": "uyvy422",
+                "clockOutput": False,
+                "referenceLevel": 1.0,
             },
         }
         self.config = core.normalize_config(self.config)
@@ -1483,63 +1147,55 @@ class MainWindow(QMainWindow):
         current_display_id = str(sender.get("displayId") or "")
 
         self.sender_display_combo.blockSignals(True)
-        self.sender_host_edit.blockSignals(True)
-        self.sender_port_spin.blockSignals(True)
-        self.sender_latency_spin.blockSignals(True)
+        self.sender_name_edit.blockSignals(True)
         self.sender_fps_spin.blockSignals(True)
-        self.sender_bitrate_spin.blockSignals(True)
-        self.sender_encoder_combo.blockSignals(True)
+        self.sender_pixfmt_combo.blockSignals(True)
+        self.sender_clock_chk.blockSignals(True)
         try:
             self.sender_display_combo.clear()
             self.sender_display_combo.addItem("— Sélectionner —", "")
+            known_ids = set()
             for d in self.sender_displays:
-                self.sender_display_combo.addItem(d["name"], str(d["id"]))
+                did = str(d["id"])
+                self.sender_display_combo.addItem(d["name"], did)
+                known_ids.add(did)
+            # Preserve a binding to a display not currently detected by adding a
+            # ghost entry. This avoids wiping the user's choice on a transient
+            # enumeration glitch (asleep monitor, slow driver init, etc.).
+            if current_display_id and current_display_id not in known_ids:
+                self.sender_display_combo.addItem(
+                    f"⚠ Écran absent ({current_display_id})", current_display_id
+                )
             idx = self.sender_display_combo.findData(current_display_id)
             if idx >= 0:
                 self.sender_display_combo.setCurrentIndex(idx)
 
-            self.sender_host_edit.setText(str(sender.get("host") or "127.0.0.1"))
-            try:
-                self.sender_port_spin.setValue(int(sender.get("port") or 10000))
-            except Exception:
-                self.sender_port_spin.setValue(10000)
-            try:
-                self.sender_latency_spin.setValue(int(sender.get("latency") or 120))
-            except Exception:
-                self.sender_latency_spin.setValue(120)
+            self.sender_name_edit.setText(str(sender.get("name") or "SRT Multiview"))
             try:
                 self.sender_fps_spin.setValue(int(sender.get("fps") or 30))
             except Exception:
                 self.sender_fps_spin.setValue(30)
-            try:
-                self.sender_bitrate_spin.setValue(int(sender.get("bitrateK") or 4000))
-            except Exception:
-                self.sender_bitrate_spin.setValue(4000)
-
-            enc = str(sender.get("encoder") or "cpu").strip().lower()
-            idx = self.sender_encoder_combo.findData(enc)
+            pf = str(sender.get("pixelFormat") or "uyvy422").strip().lower()
+            idx = self.sender_pixfmt_combo.findData(pf)
             if idx >= 0:
-                self.sender_encoder_combo.setCurrentIndex(idx)
+                self.sender_pixfmt_combo.setCurrentIndex(idx)
+            self.sender_clock_chk.setChecked(bool(sender.get("clockOutput", False)))
         finally:
             self.sender_display_combo.blockSignals(False)
-            self.sender_host_edit.blockSignals(False)
-            self.sender_port_spin.blockSignals(False)
-            self.sender_latency_spin.blockSignals(False)
+            self.sender_name_edit.blockSignals(False)
             self.sender_fps_spin.blockSignals(False)
-            self.sender_bitrate_spin.blockSignals(False)
-            self.sender_encoder_combo.blockSignals(False)
+            self.sender_pixfmt_combo.blockSignals(False)
+            self.sender_clock_chk.blockSignals(False)
 
         self.refresh_sender_status()
 
     def on_sender_changed(self, *_args):
         sender = self.config.setdefault("sender", {})
         sender["displayId"] = str(self.sender_display_combo.currentData() or "")
-        sender["host"] = self.sender_host_edit.text().strip() or "127.0.0.1"
-        sender["port"] = int(self.sender_port_spin.value())
-        sender["latency"] = int(self.sender_latency_spin.value())
+        sender["name"] = self.sender_name_edit.text().strip() or "SRT Multiview"
         sender["fps"] = int(self.sender_fps_spin.value())
-        sender["bitrateK"] = int(self.sender_bitrate_spin.value())
-        sender["encoder"] = str(self.sender_encoder_combo.currentData() or "cpu")
+        sender["pixelFormat"] = str(self.sender_pixfmt_combo.currentData() or "uyvy422")
+        sender["clockOutput"] = bool(self.sender_clock_chk.isChecked())
         self.schedule_save()
 
     def on_receiver_changed(self, *_args):
@@ -1590,33 +1246,26 @@ class MainWindow(QMainWindow):
         sender = self.config.get("sender", {})
         display_id = str(sender.get("displayId") or "")
         if not display_id:
-            QMessageBox.warning(self, "Émission SRT", "Sélectionne un écran à émettre.")
+            QMessageBox.warning(self, "Émission OMT", "Sélectionne un écran à émettre.")
             return
 
         display = next((d for d in self.sender_displays if str(d.get("id")) == display_id), None)
         if not display:
-            QMessageBox.warning(self, "Émission SRT", "L'écran sélectionné n'est plus disponible.")
+            QMessageBox.warning(self, "Émission OMT", "L'écran sélectionné n'est plus disponible.")
             return
 
-        host = str(sender.get("host") or "127.0.0.1")
-        port = int(sender.get("port") or 10000)
-        latency = int(sender.get("latency") or 120)
-        fps = int(sender.get("fps") or 30)
-        bitrate_k = int(sender.get("bitrateK") or 4000)
-        encoder = str(sender.get("encoder") or "cpu")
         result = core.sender_manager.start(
             display,
-            host,
-            port,
-            latency_ms=latency,
-            fps=fps,
-            bitrate_k=bitrate_k,
-            encoder=encoder,
+            name=str(sender.get("name") or "SRT Multiview"),
+            fps=int(sender.get("fps") or 30),
+            pixel_format=str(sender.get("pixelFormat") or "uyvy422"),
+            clock_output=bool(sender.get("clockOutput", False)),
+            reference_level=float(sender.get("referenceLevel", 1.0)),
         )
         if not result.ok:
             QMessageBox.warning(
                 self,
-                "Émission SRT",
+                "Émission OMT",
                 "Impossible de démarrer l'émission.\n\n" + (result.reason or "Erreur inconnue."),
             )
         self.refresh_sender_status()
@@ -1686,9 +1335,11 @@ class MainWindow(QMainWindow):
         source_combo = QComboBox()
         source_combo.addItem("SRT", "srt")
         source_combo.addItem("Route", "route")
+        source_combo.addItem("OMT", "omt")
         source_combo.setFixedHeight(28)
         current_source = str(stream.get("source") or "srt").strip().lower()
         is_route_source = current_source == "route"
+        is_omt_source = current_source == "omt"
         idx = source_combo.findData(current_source)
         if idx >= 0:
             source_combo.setCurrentIndex(idx)
@@ -1707,17 +1358,35 @@ class MainWindow(QMainWindow):
         ridx = route_combo.findData(current_route_id)
         if ridx >= 0:
             route_combo.setCurrentIndex(ridx)
-        route_combo.setEnabled(str(source_combo.currentData() or "srt") == "route")
-        route_combo.setVisible(str(source_combo.currentData() or "srt") == "route")
+        route_combo.setEnabled(is_route_source)
+        route_combo.setVisible(is_route_source)
         route_combo.currentIndexChanged.connect(lambda _v, r=row: self._on_card_changed(r))
+
+        omt_edit = QLineEdit(str(stream.get("omtSource") or ""))
+        omt_edit.setPlaceholderText("HOST (Source Name)")
+        omt_edit.setFixedHeight(28)
+        omt_edit.editingFinished.connect(lambda r=row: self._on_card_changed(r))
+        omt_edit.setVisible(is_omt_source)
+
+        omt_btn = QPushButton("🔍")
+        omt_btn.setToolTip("Découvrir les sources OMT du réseau")
+        omt_btn.setFixedSize(30, 28)
+        omt_btn.clicked.connect(lambda _c=False, r=row: self._discover_omt_source(r))
+        omt_btn.setVisible(is_omt_source)
 
         fields.addWidget(source_lbl, 0, 0)
         if is_route_source:
             fields.addWidget(source_combo, 0, 1)
             fields.addWidget(route_combo, 0, 2, 1, 4)
+        elif is_omt_source:
+            fields.addWidget(source_combo, 0, 1)
+            fields.addWidget(omt_edit, 0, 2, 1, 3)
+            fields.addWidget(omt_btn, 0, 5)
         else:
             fields.addWidget(source_combo, 0, 1, 1, 5)
             route_combo.hide()
+            omt_edit.hide()
+            omt_btn.hide()
 
         # ── Row 2: port + latency + mute ──
 
@@ -1732,7 +1401,7 @@ class MainWindow(QMainWindow):
         port_spin.setButtonSymbols(QSpinBox.NoButtons)
         port_spin.setFixedHeight(28)
         port_spin.setFixedWidth(70)
-        port_spin.setEnabled(not is_route_source)
+        port_spin.setEnabled(current_source == "srt")
         port_spin.valueChanged.connect(lambda v, r=row: self._on_card_changed(r))
 
         lat_lbl = QLabel("Latence")
@@ -1747,7 +1416,7 @@ class MainWindow(QMainWindow):
         latency_spin.setButtonSymbols(QSpinBox.NoButtons)
         latency_spin.setFixedHeight(28)
         latency_spin.setFixedWidth(80)
-        latency_spin.setEnabled(not is_route_source)
+        latency_spin.setEnabled(current_source == "srt")
         latency_spin.valueChanged.connect(lambda v, r=row: self._on_card_changed(r))
 
         mute_chk = QCheckBox("Muet")
@@ -1811,12 +1480,15 @@ class MainWindow(QMainWindow):
         display_combo.setFixedHeight(28)
 
         current_display_id = self.config.get("mapping", {}).get(stream_id)
-        if current_display_id is not None and str(current_display_id) in display_ids:
-            idx = display_combo.findData(str(current_display_id))
+        if current_display_id:
+            cid = str(current_display_id)
+            # Preserve binding to a display that isn't currently detected
+            # (asleep monitor, slow driver init…) by adding a ghost entry.
+            if cid not in display_ids:
+                display_combo.addItem(f"⚠ Écran absent ({cid})", cid)
+            idx = display_combo.findData(cid)
             if idx >= 0:
                 display_combo.setCurrentIndex(idx)
-        elif current_display_id is not None:
-            self.config.get("mapping", {}).pop(stream_id, None)
 
         display_combo.currentIndexChanged.connect(lambda v, r=row: self._on_card_changed(r))
 
@@ -1841,6 +1513,8 @@ class MainWindow(QMainWindow):
             "rot_combo": rot_combo,
             "source_combo": source_combo,
             "route_combo": route_combo,
+            "omt_edit": omt_edit,
+            "omt_btn": omt_btn,
             "display_combo": display_combo,
             "status_dot": status_dot,
             "status_label": status_label,
@@ -2007,30 +1681,52 @@ class MainWindow(QMainWindow):
             return
         card = self.stream_cards[row]
         source = str(card["source_combo"].currentData() or "srt")
-        card["route_combo"].setEnabled(source == "route")
         grid = card.get("fields")
         if isinstance(grid, QGridLayout):
-            try:
-                grid.removeWidget(card["source_combo"])
-            except Exception:
-                pass
-            try:
-                grid.removeWidget(card["route_combo"])
-            except Exception:
-                pass
+            for key in ("source_combo", "route_combo", "omt_edit", "omt_btn"):
+                try:
+                    grid.removeWidget(card[key])
+                except Exception:
+                    pass
 
             if source == "route":
                 grid.addWidget(card["source_combo"], 0, 1)
                 grid.addWidget(card["route_combo"], 0, 2, 1, 4)
                 card["route_combo"].show()
+                card["omt_edit"].hide()
+                card["omt_btn"].hide()
+            elif source == "omt":
+                grid.addWidget(card["source_combo"], 0, 1)
+                grid.addWidget(card["omt_edit"], 0, 2, 1, 3)
+                grid.addWidget(card["omt_btn"], 0, 5)
+                card["omt_edit"].show()
+                card["omt_btn"].show()
+                card["route_combo"].hide()
             else:
                 grid.addWidget(card["source_combo"], 0, 1, 1, 5)
                 card["route_combo"].hide()
-        card["port_spin"].setEnabled(source != "route")
-        card["latency_spin"].setEnabled(source != "route")
+                card["omt_edit"].hide()
+                card["omt_btn"].hide()
+        card["route_combo"].setEnabled(source == "route")
+        card["omt_edit"].setEnabled(source == "omt")
+        card["omt_btn"].setEnabled(source == "omt")
+        card["port_spin"].setEnabled(source == "srt")
+        card["latency_spin"].setEnabled(source == "srt")
         if source != "route":
             card["route_combo"].setCurrentIndex(0)
+        if source != "omt":
+            card["omt_edit"].clear()
         self._on_card_changed(row)
+
+    def _discover_omt_source(self, row: int):
+        if row < 0 or row >= len(self.stream_cards):
+            return
+        card = self.stream_cards[row]
+        current = card["omt_edit"].text().strip()
+        dlg = OMTDiscoveryDialog(self, current=current)
+        if dlg.exec() == QDialog.Accepted and dlg.selected_source:
+            card["omt_edit"].setText(dlg.selected_source)
+            self._on_card_changed(row)
 
     def _delete_stream(self, row: int):
         streams = self.config.get("streams", [])
@@ -2048,6 +1744,8 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
         core.player_manager.stop_player(stream_id)
+        core.player_manager.clear_logs(stream_id)
+        self.pending_stream_starts.pop(stream_id, None)
         streams.pop(row)
         self.config.get("mapping", {}).pop(stream_id, None)
         self.reload_table()
@@ -2074,10 +1772,12 @@ class MainWindow(QMainWindow):
 
         source = str(card["source_combo"].currentData() or "srt")
         stream["source"] = source
-        if source == "route":
-            stream["sourceRouteId"] = str(card["route_combo"].currentData() or "")
-        else:
-            stream["sourceRouteId"] = ""
+        stream["sourceRouteId"] = (
+            str(card["route_combo"].currentData() or "") if source == "route" else ""
+        )
+        stream["omtSource"] = (
+            card["omt_edit"].text().strip() if source == "omt" else ""
+        )
 
         display_id = card["display_combo"].currentData() or ""
         mapping = self.config.setdefault("mapping", {})
@@ -2155,7 +1855,7 @@ class MainWindow(QMainWindow):
         failures = [
             f"{stream_name_by_id.get(str(sid), str(sid))} — {(res.reason or 'Erreur inconnue.') }"
             for sid, res in results.items()
-            if not res.ok
+            if not res.ok and res.reason != "NO_DISPLAY"
         ]
         self.refresh_status()
 
@@ -2266,12 +1966,23 @@ class MainWindow(QMainWindow):
         self.refresh_sender_status()
         self.refresh_routes_status()
 
+    def _next_free_srt_port(self, start: int = 9001) -> int:
+        used = {
+            int(s.get("port") or 0)
+            for s in (self.config.get("streams") or [])
+            if isinstance(s, dict)
+        }
+        port = max(int(start), 1)
+        while port in used and port < 65535:
+            port += 1
+        return port
+
     def add_stream(self):
-        now = int(time.time() * 1000)
         next_index = len(self.config.get("streams", [])) + 1
-        stream_id = f"stream-{now}"
+        stream_id = f"stream-{uuid.uuid4().hex[:12]}"
+        port = self._next_free_srt_port(9000 + next_index)
         self.config.setdefault("streams", []).append(
-            {"id": stream_id, "name": f"Flux {next_index}", "port": 9000 + next_index, "latency": 120}
+            {"id": stream_id, "name": f"Flux {next_index}", "port": port, "latency": 120}
         )
         self.reload_table()
         self.schedule_save()
@@ -2317,8 +2028,7 @@ class MainWindow(QMainWindow):
 
             start_index = len(streams)
             for i in range(start_index, target_count):
-                now = int(time.time() * 1000)
-                stream_id = f"stream-{now}-{i + 1}"
+                stream_id = f"stream-{uuid.uuid4().hex[:12]}"
                 port = _next_free_port(9000 + i + 1)
                 streams.append({"id": stream_id, "name": f"Flux {i + 1}", "port": port, "latency": 120})
 
@@ -2409,6 +2119,13 @@ class MainWindow(QMainWindow):
         self.global_state_chip.style().polish(self.global_state_chip)
 
     def closeEvent(self, event):
+        # Flush any pending autosave before tearing everything down.
+        if self.autosave_timer.isActive():
+            self.autosave_timer.stop()
+        try:
+            self.save()
+        except Exception:
+            pass
         core.player_manager.stop_all()
         core.sender_manager.stop()
         core.route_manager.stop_all()
@@ -2416,7 +2133,7 @@ class MainWindow(QMainWindow):
 
 
 def main() -> None:
-    qdarktheme.enable_hi_dpi()
+    enable_hi_dpi()
 
     if sys.platform == "win32":
         try:

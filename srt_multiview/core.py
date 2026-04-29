@@ -1,6 +1,8 @@
 import ctypes
 import hashlib
 import json
+import os
+import re
 import subprocess
 import sys
 import threading
@@ -12,6 +14,11 @@ from pathlib import Path
 from screeninfo import get_monitors
 
 from .paths import CONFIG_PATH, FFMPEG_PATH, FFPLAY_PATH
+
+
+VALID_STREAM_SOURCES = {"srt", "route", "omt", "udp"}
+VALID_RECEIVER_DECODES = {"cpu", "auto", "dxva2", "h264_amf", "h264_cuvid", "h264_qsv"}
+VALID_OMT_PIXEL_FORMATS = ("uyvy422", "bgra", "yuv422p10le")
 
 
 DISPLAY_ID_SCHEMA_VERSION = 2
@@ -285,12 +292,17 @@ def load_config() -> dict:
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             loaded = json.load(f)
-            schema_before = _config_display_schema_version(loaded)
-            config = normalize_config(loaded)
-            if schema_before != DISPLAY_ID_SCHEMA_VERSION:
-                save_config(config)
-            return config
-    except (json.JSONDecodeError, ValueError):
+        schema_before = _config_display_schema_version(loaded)
+        config = normalize_config(loaded)
+        if schema_before != DISPLAY_ID_SCHEMA_VERSION:
+            save_config(config)
+        return config
+    except (json.JSONDecodeError, ValueError, OSError):
+        try:
+            backup = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".bak")
+            CONFIG_PATH.replace(backup)
+        except OSError:
+            pass
         return normalize_config(
             {
                 "streams": [
@@ -369,36 +381,28 @@ def normalize_config(config: dict) -> dict:
     config["routes"] = normalized_routes
 
     sender = dict(config.get("sender") or {})
-    sender.setdefault("displayId", "")
-    sender.setdefault("host", "127.0.0.1")
-    sender.setdefault("port", 10000)
-    sender.setdefault("latency", 120)
-    sender.setdefault("fps", 30)
-    sender.setdefault("bitrateK", 4000)
-    sender.setdefault("encoder", "cpu")
     sender["displayId"] = "" if reset_display_bindings else str(sender.get("displayId") or "")
-    sender["host"] = str(sender.get("host") or "127.0.0.1")
-    sender.pop("includeSystemAudio", None)
-    sender_encoder = str(sender.get("encoder") or "cpu").strip().lower()
-    if sender_encoder not in {"cpu", "nvenc", "amf", "auto"}:
-        sender_encoder = "cpu"
-    sender["encoder"] = sender_encoder
+    sender["name"] = str(sender.get("name") or "SRT Multiview").strip() or "SRT Multiview"
     try:
-        sender["port"] = int(sender.get("port") or 10000)
+        fps = int(sender.get("fps") or 30)
     except (TypeError, ValueError):
-        sender["port"] = 10000
+        fps = 30
+    sender["fps"] = max(1, min(60, fps))
+    pf = str(sender.get("pixelFormat") or "uyvy422").strip().lower()
+    if pf not in VALID_OMT_PIXEL_FORMATS:
+        pf = "uyvy422"
+    sender["pixelFormat"] = pf
+    sender["clockOutput"] = bool(sender.get("clockOutput", False))
     try:
-        sender["latency"] = int(sender.get("latency") or 120)
+        sender["referenceLevel"] = float(sender.get("referenceLevel", 1.0))
     except (TypeError, ValueError):
-        sender["latency"] = 120
-    try:
-        sender["fps"] = int(sender.get("fps") or 30)
-    except (TypeError, ValueError):
-        sender["fps"] = 30
-    try:
-        sender["bitrateK"] = int(sender.get("bitrateK") or 4000)
-    except (TypeError, ValueError):
-        sender["bitrateK"] = 4000
+        sender["referenceLevel"] = 1.0
+    # Drop legacy SRT-sender fields and the in-development audio fields.
+    for legacy in (
+        "host", "port", "latency", "bitrateK", "encoder", "includeSystemAudio",
+        "noAudio", "audioDevice", "audioSampleRate", "audioChannels",
+    ):
+        sender.pop(legacy, None)
     config["sender"] = sender
 
     receiver = dict(config.get("receiver") or {})
@@ -406,7 +410,7 @@ def normalize_config(config: dict) -> dict:
     decode = str(receiver.get("decode") or "cpu").strip().lower()
     if decode == "gpu":
         decode = "auto"
-    if decode not in {"cpu", "auto", "dxva2", "h264_amf", "h264_cuvid", "h264_qsv"}:
+    if decode not in VALID_RECEIVER_DECODES:
         decode = "cpu"
     receiver["decode"] = decode
     config["receiver"] = receiver
@@ -431,6 +435,7 @@ def normalize_config(config: dict) -> dict:
         stream.setdefault("sourceRouteId", "")
         stream.setdefault("udpAddr", "")
         stream.setdefault("udpPort", 0)
+        stream.setdefault("omtSource", "")
         stream["id"] = str(stream.get("id") or f"stream-{i + 1}")
         stream["name"] = str(stream.get("name") or stream["id"])
         try:
@@ -454,7 +459,7 @@ def normalize_config(config: dict) -> dict:
             rotate = 0
         stream["rotate"] = rotate
         source = str(stream.get("source") or "srt").strip().lower()
-        if source not in {"srt", "route", "udp"}:
+        if source not in VALID_STREAM_SOURCES:
             source = "srt"
         stream["source"] = source
         stream["sourceRouteId"] = str(stream.get("sourceRouteId") or "")
@@ -463,6 +468,7 @@ def normalize_config(config: dict) -> dict:
             stream["udpPort"] = int(stream.get("udpPort") or 0)
         except (TypeError, ValueError):
             stream["udpPort"] = 0
+        stream["omtSource"] = str(stream.get("omtSource") or "").strip()
         normalized_streams.append(stream)
 
     config["streams"] = normalized_streams
@@ -471,8 +477,16 @@ def normalize_config(config: dict) -> dict:
 
 def save_config(config: dict) -> None:
     config = normalize_config(config)
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass
+    os.replace(tmp_path, CONFIG_PATH)
 
 
 def get_displays(exclude_primary: bool = False, *, name_overrides: dict[str, str] | None = None) -> list[dict]:
@@ -602,21 +616,31 @@ class PlayerManager:
         for stream_id in list(self.players.keys()):
             self.stop_player(stream_id)
 
-    def _input_url(self, stream: dict) -> tuple[str, str | None]:
+    def clear_logs(self, stream_id: str) -> None:
+        self.player_logs.pop(stream_id, None)
+
+    def _input_args(self, stream: dict) -> tuple[list[str], str | None]:
+        """Return ffplay/ffmpeg input args (everything that goes before any output)."""
         source = str(stream.get("source") or "srt").strip().lower()
-        if source not in {"srt", "udp"}:
+        if source not in {"srt", "udp", "omt"}:
             source = "srt"
 
         if source == "udp":
             addr = str(stream.get("udpAddr") or "").strip()
             udp_port = int(stream.get("udpPort") or 0)
             if not addr or udp_port <= 0:
-                return ("", "Source UDP invalide")
-            return (f"udp://@{addr}:{udp_port}", None)
+                return ([], "Source UDP invalide")
+            return (["-i", f"udp://@{addr}:{udp_port}"], None)
+
+        if source == "omt":
+            name = str(stream.get("omtSource") or "").strip()
+            if not name:
+                return ([], "Source OMT vide")
+            return (["-f", "libomt", "-i", name], None)
 
         latency_ms = int(stream.get("latency", 120))
         port = int(stream.get("port"))
-        return (f"srt://0.0.0.0:{port}?mode=listener&latency={latency_ms * 1000}", None)
+        return (["-i", f"srt://0.0.0.0:{port}?mode=listener&latency={latency_ms * 1000}"], None)
 
     def _vf(self, stream: dict, display: dict, *, hwaccel: str = "cpu") -> str:
         display_w = int(display["width"])
@@ -650,7 +674,7 @@ class PlayerManager:
         elif rotate == 270:
             vf = f"transpose=2,{vf}"
         elif rotate == 180:
-            vf = f"transpose=1,transpose=1,{vf}"
+            vf = f"hflip,vflip,{vf}"
 
         hwaccel = str(hwaccel or "cpu").strip().lower()
         if hwaccel == "h264_qsv":
@@ -666,20 +690,20 @@ class PlayerManager:
         stream_id = str(stream.get("id"))
         self.stop_player(stream_id)
 
-        input_url, input_err = self._input_url(stream)
+        input_args, input_err = self._input_args(stream)
         if input_err:
             return PlayerLaunchResult(ok=False, reason=input_err)
 
         hwaccel = str(hwaccel or "cpu").strip().lower()
         if hwaccel == "gpu":
             hwaccel = "auto"
-        if hwaccel not in {"cpu", "auto", "dxva2", "h264_amf", "h264_cuvid", "h264_qsv"}:
+        if hwaccel not in VALID_RECEIVER_DECODES:
             hwaccel = "cpu"
 
         vf = self._vf(stream, display, hwaccel=hwaccel)
 
         source = str(stream.get("source") or "srt").strip().lower()
-        if source not in {"srt", "udp"}:
+        if source not in {"srt", "udp", "omt"}:
             source = "srt"
 
         args = [
@@ -744,10 +768,7 @@ class PlayerManager:
         if bool(stream.get("muteAudio")):
             args.append("-an")
 
-        args.extend([
-            "-i",
-            input_url,
-        ])
+        args.extend(input_args)
 
         self._set_log_info(
             stream_id,
@@ -806,41 +827,12 @@ class SenderLaunchResult:
 
 
 class SenderManager:
+    """Publish a Windows screen capture as an OMT source via FFmpeg/libomt."""
+
     def __init__(self, ffmpeg_path: Path):
         self.ffmpeg_path = ffmpeg_path
         self.proc: subprocess.Popen | None = None
         self.last_error: str | None = None
-        self._encoders_cache: set[str] | None = None
-
-    def _available_encoders(self) -> set[str]:
-        if self._encoders_cache is not None:
-            return self._encoders_cache
-        if not self.ffmpeg_path.exists():
-            self._encoders_cache = set()
-            return self._encoders_cache
-
-        try:
-            creationflags = _win_creationflags()
-            p = subprocess.run(
-                [
-                    str(self.ffmpeg_path),
-                    "-hide_banner",
-                    "-encoders",
-                ],
-                capture_output=True,
-                text=True,
-                creationflags=creationflags,
-            )
-            out = (p.stdout or "") + "\n" + (p.stderr or "")
-            encs: set[str] = set()
-            for name in ("h264_nvenc", "h264_amf"):
-                if name in out:
-                    encs.add(name)
-            self._encoders_cache = encs
-            return encs
-        except Exception:
-            self._encoders_cache = set()
-            return self._encoders_cache
 
     def stop(self) -> None:
         _terminate_proc(self.proc)
@@ -849,23 +841,15 @@ class SenderManager:
     def status(self) -> bool:
         return bool(self.proc and self.proc.poll() is None)
 
-    def _virtual_desktop_origin(self, displays: list[dict]) -> tuple[int, int]:
-        if not displays:
-            return (0, 0)
-        min_x = min(int(d.get("x", 0)) for d in displays)
-        min_y = min(int(d.get("y", 0)) for d in displays)
-        return (min_x, min_y)
-
     def start(
         self,
         display: dict,
-        host: str,
-        port: int,
         *,
-        latency_ms: int = 120,
+        name: str,
         fps: int = 30,
-        bitrate_k: int = 4000,
-        encoder: str = "cpu",
+        pixel_format: str = "uyvy422",
+        clock_output: bool = False,
+        reference_level: float = 1.0,
     ) -> SenderLaunchResult:
         if not self.ffmpeg_path.exists():
             self.last_error = f"ffmpeg introuvable: {self.ffmpeg_path}"
@@ -878,150 +862,44 @@ class SenderManager:
         width = int(display["width"])
         height = int(display["height"])
 
-        latency_us = max(0, int(latency_ms)) * 1000
-        fps = max(1, int(fps))
-        bitrate_k = max(100, int(bitrate_k))
-        gop = max(1, fps)
-        host = (host or "127.0.0.1").strip()
-        port = int(port)
-
-        out_url = (
-            f"srt://{host}:{port}?mode=caller&latency={latency_us}"
-            f"&transtype=live&pkt_size=1316"
-        )
+        fps = max(1, min(60, int(fps)))
+        pf = str(pixel_format or "uyvy422").strip().lower()
+        if pf not in VALID_OMT_PIXEL_FORMATS:
+            pf = "uyvy422"
+        omt_name = str(name or "").strip() or "SRT Multiview"
 
         args = [
             str(self.ffmpeg_path),
             "-hide_banner",
-            "-loglevel",
-            "warning",
-            "-fflags",
-            "nobuffer",
-            "-flags",
-            "low_delay",
-            "-thread_queue_size",
-            "128",
-            "-f",
-            "gdigrab",
-            "-framerate",
-            str(fps),
-            "-offset_x",
-            str(capture_x),
-            "-offset_y",
-            str(capture_y),
-            "-video_size",
-            f"{width}x{height}",
-            "-draw_mouse",
-            "1",
-            "-i",
-            "desktop",
+            "-loglevel", "warning",
+            "-fflags", "+nobuffer",
+            "-flags", "low_delay",
+            "-thread_queue_size", "512",
+            "-use_wallclock_as_timestamps", "1",
+            "-f", "gdigrab",
+            "-framerate", str(fps),
+            "-offset_x", str(capture_x),
+            "-offset_y", str(capture_y),
+            "-video_size", f"{width}x{height}",
+            "-draw_mouse", "1",
+            "-i", "desktop",
+            "-map", "0:v:0",
             "-an",
+            "-vf", f"format={pf}",
+            "-c:v", "wrapped_avframe",
+            "-vsync", "passthrough",
+            "-clock_output", "1" if clock_output else "0",
+            "-reference_level", f"{float(reference_level):.3f}",
+            "-f", "libomt",
+            omt_name,
         ]
-
-        enc = str(encoder or "cpu").strip().lower()
-        if enc not in {"cpu", "nvenc", "amf", "auto"}:
-            enc = "cpu"
-
-        if enc == "auto":
-            available = self._available_encoders()
-            if "h264_amf" in available:
-                enc = "amf"
-            elif "h264_nvenc" in available:
-                enc = "nvenc"
-            else:
-                enc = "cpu"
-
-        if enc == "nvenc":
-            args.extend([
-                "-c:v",
-                "h264_nvenc",
-                "-preset",
-                "ll",
-                "-tune",
-                "ll",
-                "-rc",
-                "cbr",
-                "-zerolatency",
-                "1",
-                "-pix_fmt",
-                "yuv420p",
-                "-g",
-                str(gop),
-                "-keyint_min",
-                str(gop),
-                "-bf",
-                "0",
-                "-b:v",
-                f"{bitrate_k}k",
-                "-maxrate",
-                f"{bitrate_k}k",
-                "-bufsize",
-                f"{bitrate_k}k",
-            ])
-        elif enc == "amf":
-            args.extend([
-                "-c:v",
-                "h264_amf",
-                "-quality",
-                "speed",
-                "-pix_fmt",
-                "yuv420p",
-                "-g",
-                str(gop),
-                "-keyint_min",
-                str(gop),
-                "-bf",
-                "0",
-                "-b:v",
-                f"{bitrate_k}k",
-                "-maxrate",
-                f"{bitrate_k}k",
-                "-bufsize",
-                f"{bitrate_k}k",
-            ])
-        else:
-            args.extend([
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-tune",
-                "zerolatency",
-                "-pix_fmt",
-                "yuv420p",
-                "-g",
-                str(gop),
-                "-keyint_min",
-                str(gop),
-                "-bf",
-                "0",
-                "-b:v",
-                f"{bitrate_k}k",
-                "-maxrate",
-                f"{bitrate_k}k",
-                "-bufsize",
-                f"{bitrate_k}k",
-            ])
-
-        args.extend([
-            "-flush_packets",
-            "1",
-            "-muxdelay",
-            "0",
-            "-muxpreload",
-            "0",
-            "-mpegts_flags",
-            "+resend_headers",
-            "-f",
-            "mpegts",
-            out_url,
-        ])
 
         creationflags = _win_creationflags()
 
         try:
             self.proc = subprocess.Popen(
                 args,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 creationflags=creationflags,
@@ -1138,7 +1016,7 @@ def apply_mapping(config: dict) -> dict[str, PlayerLaunchResult]:
     receiver_hwaccel = str((config.get("receiver") or {}).get("decode") or "cpu").strip().lower()
     if receiver_hwaccel == "gpu":
         receiver_hwaccel = "auto"
-    if receiver_hwaccel not in {"cpu", "auto", "dxva2", "h264_amf", "h264_cuvid", "h264_qsv"}:
+    if receiver_hwaccel not in VALID_RECEIVER_DECODES:
         receiver_hwaccel = "cpu"
 
     results: dict[str, PlayerLaunchResult] = {}
@@ -1147,6 +1025,7 @@ def apply_mapping(config: dict) -> dict[str, PlayerLaunchResult]:
 
     routes = {str(r.get("id")): r for r in (config.get("routes") or []) if isinstance(r, dict)}
     route_status = route_manager.status()
+    running_players = player_manager.status()
 
     for stream in config["streams"]:
         stream_id = str(stream["id"])
@@ -1154,10 +1033,15 @@ def apply_mapping(config: dict) -> dict[str, PlayerLaunchResult]:
 
         if not display_id or str(display_id) not in display_map:
             player_manager.stop_player(stream_id)
-            results[stream_id] = PlayerLaunchResult(ok=False, reason="Aucun écran assigné")
+            results[stream_id] = PlayerLaunchResult(ok=False, reason="NO_DISPLAY")
             continue
 
         display = display_map[str(display_id)]
+
+        # Skip restart if the player is already healthy.
+        if running_players.get(stream_id):
+            results[stream_id] = PlayerLaunchResult(ok=True)
+            continue
 
         source = str(stream.get("source") or "srt").strip().lower()
         if source == "route":
@@ -1181,3 +1065,79 @@ def apply_mapping(config: dict) -> dict[str, PlayerLaunchResult]:
             results[stream_id] = player_manager.start_player(stream, display, hwaccel=receiver_hwaccel)
 
     return results
+
+
+_OMT_LINE_RE = re.compile(r"^\[libomt[^\]]*\]\s+(.*)$")
+
+
+def list_omt_sources(timeout_seconds: float = 8.0) -> tuple[list[str], str | None]:
+    """Discover OMT sources visible on the network using ``ffmpeg -find_sources``.
+
+    Returns ``(sources, error)``. ``error`` is set when discovery itself failed
+    (e.g. ffmpeg missing, libomt unavailable). An empty ``sources`` list with a
+    ``None`` error means the discovery ran but nothing was advertised.
+    """
+    if not FFMPEG_PATH.exists():
+        return ([], f"ffmpeg introuvable: {FFMPEG_PATH}")
+
+    args = [
+        str(FFMPEG_PATH),
+        "-hide_banner",
+        "-loglevel",
+        "info",
+        "-nostdin",
+        "-find_sources",
+        "1",
+        "-f",
+        "libomt",
+        "-i",
+        "",
+        "-frames:v",
+        "1",
+        "-f",
+        "null",
+        "-",
+    ]
+
+    try:
+        proc = subprocess.run(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=max(1.0, float(timeout_seconds)),
+            check=False,
+            creationflags=_win_creationflags(),
+        )
+    except subprocess.TimeoutExpired:
+        return ([], f"Timeout après {timeout_seconds:.0f}s lors de la découverte OMT")
+    except OSError as exc:
+        return ([], f"Impossible de lancer ffmpeg: {exc}")
+
+    stderr = (proc.stderr or b"").decode("utf-8", errors="ignore").splitlines()
+    sources: list[str] = []
+    in_block = False
+    for raw in stderr:
+        line = raw.strip()
+        if not line:
+            continue
+        if "OMT Sources" in line:
+            in_block = True
+            continue
+        if in_block and set(line) == {"-"}:
+            continue
+        if in_block and "Error opening input" in line:
+            break
+        if in_block:
+            match = _OMT_LINE_RE.match(line)
+            if match:
+                candidate = match.group(1).strip()
+                if candidate and candidate not in sources:
+                    sources.append(candidate)
+
+    if not sources and proc.returncode != 0 and not in_block:
+        detail = "\n".join(stderr[-5:]).strip() or "aucun détail"
+        if "libomt" in detail.lower() and "unknown" in detail.lower():
+            return ([], "Cette build de ffmpeg ne supporte pas libomt.")
+        return ([], f"Découverte OMT échouée: {detail}")
+
+    return (sources, None)

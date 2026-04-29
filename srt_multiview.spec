@@ -8,13 +8,12 @@ block_cipher = None
 
 # Include resources needed at runtime
 _datas = [
-    (str(project_dir / "config.json"), "."),
     (str(project_dir / "img"), "img"),
     (str(project_dir / "bin"), "bin"),
 ]
 
 _a = Analysis(
-    ["run_app.py"],
+    [str(project_dir / "srt_multiview" / "__main__.py")],
     pathex=[str(project_dir)],
     binaries=[],
     datas=_datas,

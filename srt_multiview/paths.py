@@ -1,6 +1,7 @@
-from pathlib import Path
+import os
 import shutil
 import sys
+from pathlib import Path
 
 
 def _runtime_root_dir() -> Path:
@@ -18,26 +19,48 @@ def _runtime_app_dir() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _resolve_binary_path(filename: str) -> Path:
-    which_names = [filename]
-    if filename.lower().endswith(".exe"):
-        which_names.append(filename[:-4])
+ROOT_DIR = _runtime_root_dir()
+APP_DIR = _runtime_app_dir()
+BIN_DIR = ROOT_DIR / "bin"
+IMG_DIR = ROOT_DIR / "img"
 
-    for which_name in which_names:
-        resolved = shutil.which(which_name)
+
+def _resolve_binary_path(filename: str) -> Path:
+    """Locate an executable, preferring the project-local ``bin/`` folder.
+
+    Order: ``BIN_DIR`` -> ``APP_DIR/bin`` -> ``shutil.which`` (system PATH).
+    The bundled binary is preferred so a custom (e.g. OMT-enabled) FFmpeg
+    shipped with the app is never shadowed by a system install.
+    """
+    for candidate in (BIN_DIR / filename, APP_DIR / "bin" / filename):
+        if candidate.exists():
+            return candidate
+
+    names = [filename]
+    if filename.lower().endswith(".exe"):
+        names.append(filename[:-4])
+    for name in names:
+        resolved = shutil.which(name)
         if resolved:
             return Path(resolved)
 
     return BIN_DIR / filename
 
 
-ROOT_DIR = _runtime_root_dir()
-BIN_DIR = ROOT_DIR / "bin"
-IMG_DIR = ROOT_DIR / "img"
+def _user_config_dir() -> Path:
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(base) / "srt-multiview"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "srt-multiview"
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "srt-multiview"
 
-CONFIG_PATH = Path.home() / "srt-multiview-config.json"
-FFPLAY_PATH = _resolve_binary_path("ffplay.exe")
-FFMPEG_PATH = _resolve_binary_path("ffmpeg.exe")
+
+CONFIG_DIR = _user_config_dir()
+CONFIG_PATH = CONFIG_DIR / "config.json"
+FFPLAY_PATH = _resolve_binary_path("ffplay.exe" if sys.platform == "win32" else "ffplay")
+FFMPEG_PATH = _resolve_binary_path("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg")
 
 APP_ICON_ICO_PATH = IMG_DIR / "icon.ico"
 APP_ICON_PNG_PATH = IMG_DIR / "icon.png"
